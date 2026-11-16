@@ -150,8 +150,9 @@ export const HomeScreen: React.FC = () => {
             src={LOGO_ASSET_PATH}
             alt=""
             draggable={false}
+            decoding="async"
             referrerPolicy="no-referrer"
-            className="h-[min(92vw,760px)] w-[min(92vw,760px)] select-none object-contain opacity-[0.06] dark:opacity-[0.17] dark:mix-blend-screen"
+            className="h-[min(92vw,760px)] w-[min(92vw,760px)] select-none object-contain opacity-[0.07] dark:opacity-[0.16]"
             style={{
               maskImage:
                 'radial-gradient(circle at center, rgba(0,0,0,1) 50%, rgba(0,0,0,0.65) 70%, rgba(0,0,0,0) 88%)',

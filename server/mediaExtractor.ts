@@ -875,6 +875,15 @@ async function extractStreamable(pattern: LinkPatternMatch): Promise<ExtractionR
   };
 }
 
+interface CachedExtraction {
+  expiresAt: number;
+  value: ExtractionResponse;
+}
+
+const EXTRACTION_CACHE = new Map<string, CachedExtraction>();
+const INFLIGHT_EXTRACTIONS = new Map<string, Promise<ExtractionResponse>>();
+const EXTRACTION_TTL_MS = 45_000;
+
 export async function extractMediaWithPatterns(rawUrl: string): Promise<ExtractionResponse> {
   const validated = validateRemoteUrl(rawUrl);
   if (!validated) {
@@ -897,6 +906,36 @@ export async function extractMediaWithPatterns(rawUrl: string): Promise<Extracti
       error: 'YOUTUBE_EXCLUDED',
     };
   }
+
+  const cacheKey = pattern.canonicalUrl;
+  const cached = EXTRACTION_CACHE.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const existingInflight = INFLIGHT_EXTRACTIONS.get(cacheKey);
+  if (existingInflight) {
+    return existingInflight;
+  }
+
+  const task = runExtractMediaWithPatterns(pattern).then((res) => {
+    if (res.ok && res.items.length > 0) {
+      if (EXTRACTION_CACHE.size >= 30) {
+        const oldest = EXTRACTION_CACHE.keys().next().value;
+        if (oldest) EXTRACTION_CACHE.delete(oldest);
+      }
+      EXTRACTION_CACHE.set(cacheKey, { expiresAt: Date.now() + EXTRACTION_TTL_MS, value: res });
+    }
+    return res;
+  }).finally(() => {
+    INFLIGHT_EXTRACTIONS.delete(cacheKey);
+  });
+
+  INFLIGHT_EXTRACTIONS.set(cacheKey, task);
+  return task;
+}
+
+async function runExtractMediaWithPatterns(pattern: LinkPatternMatch): Promise<ExtractionResponse> {
 
   if (pattern.category === 'DIRECT_MEDIA') {
     return {

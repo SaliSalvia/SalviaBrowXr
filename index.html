@@ -14,13 +14,22 @@
       property="og:description"
       content="A powerful everyday browser with automatic media detection and a capable downloader."
     />
-    <link rel="icon" type="image/jpeg" href="./assets/salvia_icon.jpg" />
+    <link rel="icon" type="image/webp" href="./assets/salvia_brand.webp" />
+    <link rel="preload" as="image" href="./assets/salvia_brand.webp" fetchpriority="high" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap"
       rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
     />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
   </head>
   <body class="bg-[var(--salvia-bg)] text-[var(--salvia-text)] antialiased selection:bg-[#8F6BFF]/30 selection:text-[var(--salvia-text)] transition-colors duration-200">
     <div id="root"></div>

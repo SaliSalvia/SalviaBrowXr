@@ -74,6 +74,7 @@ class MainActivity : AppCompatActivity() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val sniffedUrls = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    private val tabUrls = ConcurrentHashMap<String, String>()
 
     @Volatile
     private var activeTabId: String = "tab-initial"
@@ -400,9 +401,9 @@ class MainActivity : AppCompatActivity() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     val safeUrl = url ?: return
                     val viewTabId = view?.tag as? String ?: activeTabId
+                    tabUrls[viewTabId] = safeUrl
                     if (viewTabId == activeTabId) {
                         activePageUrl = safeUrl
-                        if (sniffedUrls.size > 250) sniffedUrls.clear()
                     }
                     emitUiBrowserEvent(
                         JSONObject()
@@ -417,6 +418,7 @@ class MainActivity : AppCompatActivity() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     val safeUrl = url ?: return
                     val viewTabId = view?.tag as? String ?: activeTabId
+                    tabUrls[viewTabId] = safeUrl
                     if (viewTabId == activeTabId) {
                         activePageUrl = safeUrl
                     }
@@ -567,8 +569,9 @@ class MainActivity : AppCompatActivity() {
                 ))
         if (!isMedia) return
 
-        if (sniffedUrls.size > 300) sniffedUrls.clear()
-        if (!sniffedUrls.add(urlStr)) return
+        if (sniffedUrls.size > 400) sniffedUrls.clear()
+        val dedupKey = "$tabId|$urlStr"
+        if (!sniffedUrls.add(dedupKey)) return
 
         val inferredMime = match?.inferredMime ?: when {
             low.contains(".m3u8") -> "application/vnd.apple.mpegurl"
@@ -578,11 +581,12 @@ class MainActivity : AppCompatActivity() {
             else -> "video/mp4"
         }
 
+        val emittedPageUrl = tabUrls[tabId] ?: activePageUrl
         emitUiBrowserEvent(
             JSONObject()
                 .put("type", "media-sniffed")
                 .put("tabId", tabId)
-                .put("pageUrl", activePageUrl)
+                .put("pageUrl", emittedPageUrl)
                 .put("mediaUrl", urlStr)
                 .put("mimeType", inferredMime)
                 .put("source", "FETCH")
@@ -837,17 +841,22 @@ class MainActivity : AppCompatActivity() {
             val bwv = ensureBrowserWebView(tabId)
             bwv.settings.javaScriptEnabled = jsEnabled
             bwv.settings.userAgentString = if (desktopMode) DESKTOP_USER_AGENT else MOBILE_USER_AGENT
-            sniffedUrls.clear()
-            activePageUrl = url
             if (bwv.url != url) {
+                val tabPrefix = "$tabId|"
+                sniffedUrls.removeIf { it.startsWith(tabPrefix) }
+                tabUrls[tabId] = url
+                activePageUrl = url
                 bwv.loadUrl(url)
             } else {
+                val resolvedUrl = bwv.url ?: url
+                tabUrls[tabId] = resolvedUrl
+                activePageUrl = resolvedUrl
                 emitUiBrowserEvent(
                     JSONObject()
                         .put("type", "page-finished")
                         .put("tabId", tabId)
-                        .put("url", url)
-                        .put("title", bwv.title ?: url)
+                        .put("url", resolvedUrl)
+                        .put("title", bwv.title ?: resolvedUrl)
                         .put("canGoBack", bwv.canGoBack())
                         .put("canGoForward", bwv.canGoForward())
                 )

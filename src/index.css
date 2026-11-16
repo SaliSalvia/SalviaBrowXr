@@ -2,6 +2,30 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter_regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter_medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter_bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
   font-family: "Vazirmatn";
   src: url("/fonts/vazirmatn_regular.ttf") format("truetype");
   font-weight: 400;
@@ -114,11 +138,11 @@ body,
   height: 100%;
   background-color: var(--salvia-bg);
   color: var(--salvia-text);
-  font-family: "Plus Jakarta Sans", "Outfit", system-ui, -apple-system, sans-serif;
+  font-family: "Inter", "Outfit", system-ui, -apple-system, sans-serif;
 }
 
 .font-display {
-  font-family: "Outfit", "Plus Jakarta Sans", system-ui, sans-serif;
+  font-family: "Outfit", "Inter", system-ui, sans-serif;
 }
 
 .font-data {
@@ -130,7 +154,7 @@ html[dir="rtl"],
 html[dir="rtl"] body,
 html[dir="rtl"] #root,
 html[dir="rtl"] .font-display {
-  font-family: "Vazirmatn", "Plus Jakarta Sans", system-ui, sans-serif;
+  font-family: "Vazirmatn", "Inter", system-ui, sans-serif;
   letter-spacing: 0 !important;
   line-height: 1.72;
 }
@@ -260,11 +284,11 @@ html[dir="rtl"] .font-display {
 }
 
 .animate-salvia-splash {
-  animation: salviaSplashBreath 1100ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: salviaSplashBreath 480ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .animate-salvia-halo {
-  animation: salviaHaloBreath 1100ms ease-in-out forwards;
+  animation: salviaHaloBreath 480ms ease-in-out forwards;
 }
 
 .animate-salvia-comet {

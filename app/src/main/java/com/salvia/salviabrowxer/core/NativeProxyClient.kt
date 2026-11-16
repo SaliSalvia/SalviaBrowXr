@@ -227,8 +227,36 @@ object NativeProxyClient {
         val target = validateRemoteUrl(uri.getQueryParameter("url"))
             ?: return jsonResponse(400, JSONObject().put("error", "Invalid or restricted URL"))
         val referer = uri.getQueryParameter("referer")
+        val lowerUrl = target.lowercase(Locale.US)
+        val cleanPath = lowerUrl.substringBefore('#').substringBefore('?')
 
         return try {
+            if (cleanPath.endsWith(".m3u8") || cleanPath.endsWith(".mpd")) {
+                val manifestBuilder = Request.Builder()
+                    .url(target)
+                    .get()
+                    .header("User-Agent", MOBILE_UA)
+                attachReferer(manifestBuilder, referer)
+                httpClient.newCall(manifestBuilder.build()).execute().use { mRes ->
+                    val contentType = mRes.header("Content-Type").orEmpty()
+                    val contentDisposition = mRes.header("Content-Disposition").orEmpty()
+                    val finalUrl = mRes.request.url.toString()
+                    val manifestText = if (mRes.isSuccessful) readBoundedText(mRes.body) else null
+                    val acceptRanges = mRes.header("Accept-Ranges").equals("bytes", ignoreCase = true)
+                    return jsonResponse(
+                        200,
+                        JSONObject()
+                            .put("ok", true)
+                            .put("finalUrl", finalUrl)
+                            .put("contentType", contentType)
+                            .put("contentDisposition", contentDisposition)
+                            .put("size", JSONObject.NULL)
+                            .put("acceptRanges", acceptRanges)
+                            .put("manifestText", manifestText ?: JSONObject.NULL)
+                    )
+                }
+            }
+
             val headBuilder = Request.Builder()
                 .url(target)
                 .head()
@@ -261,7 +289,6 @@ object NativeProxyClient {
                 val finalUrl = response.request.url.toString()
 
                 var manifestText: String? = null
-                val lowerUrl = target.lowercase(Locale.US)
                 if (lowerUrl.contains(".m3u8") ||
                     lowerUrl.contains(".mpd") ||
                     contentType.contains("mpegurl") ||
@@ -271,7 +298,7 @@ object NativeProxyClient {
                     attachReferer(manifestBuilder, referer)
                     httpClient.newCall(manifestBuilder.build()).execute().use { mRes ->
                         if (mRes.isSuccessful) {
-                            manifestText = mRes.body?.string()
+                            manifestText = readBoundedText(mRes.body)
                         }
                     }
                 }

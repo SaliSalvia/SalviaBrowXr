@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -363,11 +364,48 @@ function injectBrowserBridge(
 
 const MAX_HTML_BYTES = 8 * 1024 * 1024;
 
-function sendJson(res: ServerResponse, status: number, body: unknown) {
+interface CachedEntry<T> {
+  expiresAt: number;
+  data: T;
+}
+
+const BROWSE_CACHE = new Map<string, CachedEntry<Record<string, unknown>>>();
+const INFLIGHT_BROWSE = new Map<string, Promise<Record<string, unknown>>>();
+const PROBE_CACHE = new Map<string, CachedEntry<Record<string, unknown>>>();
+const INFLIGHT_PROBE = new Map<string, Promise<Record<string, unknown>>>();
+
+function cacheGet<T>(map: Map<string, CachedEntry<T>>, key: string): T | null {
+  const hit = map.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    map.delete(key);
+    return null;
+  }
+  return hit.data;
+}
+
+function cacheSet<T>(map: Map<string, CachedEntry<T>>, key: string, data: T, ttlMs: number, maxSize = 24) {
+  if (map.size >= maxSize) {
+    const oldest = map.keys().next().value;
+    if (oldest) map.delete(oldest);
+  }
+  map.set(key, { expiresAt: Date.now() + ttlMs, data });
+}
+
+function sendJson(req: IncomingMessage, res: ServerResponse, status: number, body: unknown) {
+  const payload = Buffer.from(JSON.stringify(body), 'utf-8');
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
-  res.end(JSON.stringify(body));
+  const acceptEnc = String(req.headers['accept-encoding'] || '');
+  if (payload.length > 1024 && acceptEnc.includes('gzip')) {
+    const zipped = gzipSync(payload, { level: 4 });
+    res.setHeader('Content-Encoding', 'gzip');
+    res.setHeader('Vary', 'Accept-Encoding');
+    res.end(zipped);
+    return;
+  }
+  res.end(payload);
 }
 
 async function salviaApiMiddleware(req: IncomingMessage, res: ServerResponse, next: () => void) {
@@ -375,230 +413,317 @@ async function salviaApiMiddleware(req: IncomingMessage, res: ServerResponse, ne
     next();
     return;
   }
-        const parsedReq = new URL(req.url, 'http://localhost');
+  const parsedReq = new URL(req.url, 'http://localhost');
 
-        if (parsedReq.pathname === '/api/browse') {
-          const target = validateRemoteUrl(parsedReq.searchParams.get('url'));
-          if (!target) {
-            return sendJson(res, 400, { error: 'Invalid or restricted URL' });
-          }
-          const desktop = parsedReq.searchParams.get('desktop') === '1';
-          const adBlock = parsedReq.searchParams.get('adblock') === '1';
-          const batterySaver = parsedReq.searchParams.get('battery') === '1';
-          try {
-            const response = await fetchWithTimeout(
-              target.toString(),
-              {
-                headers: {
-                  'User-Agent': desktop ? DEFAULT_USER_AGENT_DESKTOP : DEFAULT_USER_AGENT_MOBILE,
-                  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                  'Accept-Language': 'en-US,en;q=0.9',
-                },
-                redirect: 'follow',
+  if (parsedReq.pathname === '/api/browse') {
+    const target = validateRemoteUrl(parsedReq.searchParams.get('url'));
+    if (!target) {
+      return sendJson(req, res, 400, { error: 'Invalid or restricted URL' });
+    }
+    const desktop = parsedReq.searchParams.get('desktop') === '1';
+    const adBlock = parsedReq.searchParams.get('adblock') === '1';
+    const batterySaver = parsedReq.searchParams.get('battery') === '1';
+    const cacheKey = `${target.toString()}|d=${desktop ? 1 : 0}|a=${adBlock ? 1 : 0}|b=${batterySaver ? 1 : 0}`;
+
+    const cached = cacheGet(BROWSE_CACHE, cacheKey);
+    if (cached) {
+      return sendJson(req, res, 200, cached);
+    }
+
+    let task = INFLIGHT_BROWSE.get(cacheKey);
+    if (!task) {
+      task = (async () => {
+        try {
+          const response = await fetchWithTimeout(
+            target.toString(),
+            {
+              headers: {
+                'User-Agent': desktop ? DEFAULT_USER_AGENT_DESKTOP : DEFAULT_USER_AGENT_MOBILE,
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
               },
-              15000
-            );
-            const contentType = response.headers.get('content-type') || '';
-            const finalUrl = response.url || target.toString();
-            if (!response.ok) {
-              return sendJson(res, 200, {
-                ok: false,
-                status: response.status,
-                statusText: response.statusText,
-                finalUrl,
-              });
-            }
-            if (contentType.includes('text/html') || contentType.includes('application/xhtml+xml') || contentType === '') {
-              const declaredLength = Number(response.headers.get('content-length') || 0) || 0;
-              if (declaredLength > MAX_HTML_BYTES) {
-                return sendJson(res, 200, {
-                  ok: false,
-                  status: 413,
-                  statusText: 'Page is too large to proxy',
-                  finalUrl,
-                });
-              }
-              const rawHtml = await response.text();
-              if (rawHtml.length > MAX_HTML_BYTES) {
-                return sendJson(res, 200, {
-                  ok: false,
-                  status: 413,
-                  statusText: 'Page is too large to proxy',
-                  finalUrl,
-                });
-              }
-              const titleMatch = rawHtml.match(/<title[^>]*>([^<]*)<\/title>/i);
-              const title = titleMatch ? unescapeEmbeddedText(titleMatch[1]).trim() : new URL(finalUrl).hostname;
-              const { html, blockedCount } = injectBrowserBridge(rawHtml, finalUrl, adBlock, batterySaver);
-              return sendJson(res, 200, { ok: true, finalUrl, title, contentType, blockedCount, html });
-            }
-            const isDirect =
-              contentType.startsWith('video/') ||
-              contentType.startsWith('audio/') ||
-              contentType.includes('mpegurl') ||
-              contentType.includes('dash+xml');
-            return sendJson(res, 200, {
-              ok: true,
-              finalUrl,
-              title: finalUrl.split('/').pop() || target.hostname,
-              contentType,
-              blockedCount: 0,
-              isDirectMedia: isDirect,
-              contentLength: Number(response.headers.get('content-length') || 0) || null,
-            });
-          } catch (err) {
-            return sendJson(res, 200, {
+              redirect: 'follow',
+            },
+            15000
+          );
+          const contentType = response.headers.get('content-type') || '';
+          const finalUrl = response.url || target.toString();
+          if (!response.ok) {
+            return {
               ok: false,
-              error: err instanceof Error ? err.message : 'Network error',
-              finalUrl: target.toString(),
-            });
+              status: response.status,
+              statusText: response.statusText,
+              finalUrl,
+            };
           }
+          if (contentType.includes('text/html') || contentType.includes('application/xhtml+xml') || contentType === '') {
+            const declaredLength = Number(response.headers.get('content-length') || 0) || 0;
+            if (declaredLength > MAX_HTML_BYTES) {
+              return {
+                ok: false,
+                status: 413,
+                statusText: 'Page is too large to proxy',
+                finalUrl,
+              };
+            }
+            const rawHtml = await response.text();
+            if (rawHtml.length > MAX_HTML_BYTES) {
+              return {
+                ok: false,
+                status: 413,
+                statusText: 'Page is too large to proxy',
+                finalUrl,
+              };
+            }
+            const titleMatch = rawHtml.match(/<title[^>]*>([^<]*)<\/title>/i);
+            const title = titleMatch ? unescapeEmbeddedText(titleMatch[1]).trim() : new URL(finalUrl).hostname;
+            const { html, blockedCount } = injectBrowserBridge(rawHtml, finalUrl, adBlock, batterySaver);
+            const okBody = { ok: true, finalUrl, title, contentType, blockedCount, html };
+            cacheSet(BROWSE_CACHE, cacheKey, okBody, 45_000, 20);
+            return okBody;
+          }
+          const isDirect =
+            contentType.startsWith('video/') ||
+            contentType.startsWith('audio/') ||
+            contentType.includes('mpegurl') ||
+            contentType.includes('dash+xml');
+          return {
+            ok: true,
+            finalUrl,
+            title: finalUrl.split('/').pop() || target.hostname,
+            contentType,
+            blockedCount: 0,
+            isDirectMedia: isDirect,
+            contentLength: Number(response.headers.get('content-length') || 0) || null,
+          };
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : 'Network error',
+            finalUrl: target.toString(),
+          };
+        } finally {
+          INFLIGHT_BROWSE.delete(cacheKey);
         }
+      })();
+      INFLIGHT_BROWSE.set(cacheKey, task);
+    }
 
-        if (parsedReq.pathname === '/api/media/probe') {
-          const target = validateRemoteUrl(parsedReq.searchParams.get('url'));
-          if (!target) {
-            return sendJson(res, 400, { error: 'Invalid or restricted URL' });
+    const result = await task;
+    return sendJson(req, res, 200, result);
+  }
+
+  if (parsedReq.pathname === '/api/media/probe') {
+    const target = validateRemoteUrl(parsedReq.searchParams.get('url'));
+    if (!target) {
+      return sendJson(req, res, 400, { error: 'Invalid or restricted URL' });
+    }
+    const refererUrl = validateRemoteUrl(parsedReq.searchParams.get('referer'));
+    const cacheKey = `${target.toString()}|r=${refererUrl?.toString() || ''}`;
+    const cached = cacheGet(PROBE_CACHE, cacheKey);
+    if (cached) {
+      return sendJson(req, res, 200, cached);
+    }
+
+    let task = INFLIGHT_PROBE.get(cacheKey);
+    if (!task) {
+      const reqHeaders: Record<string, string> = { 'User-Agent': DEFAULT_USER_AGENT_MOBILE };
+      if (refererUrl) {
+        reqHeaders.Referer = refererUrl.toString();
+        reqHeaders.Origin = refererUrl.origin;
+      }
+
+      task = (async () => {
+        try {
+          const lowerPath = target.pathname.toLowerCase();
+          // Single-roundtrip fast path for HLS/DASH manifests
+          if (lowerPath.endsWith('.m3u8') || lowerPath.endsWith('.mpd')) {
+            const mRes = await fetchWithTimeout(
+              target.toString(),
+              { headers: reqHeaders, redirect: 'follow' },
+              12000
+            );
+            if (mRes.ok) {
+              const manifestText = await mRes.text();
+              const contentType =
+                mRes.headers.get('content-type') ||
+                (lowerPath.endsWith('.mpd') ? 'application/dash+xml' : 'application/vnd.apple.mpegurl');
+              const out = {
+                ok: true,
+                finalUrl: mRes.url || target.toString(),
+                contentType,
+                contentDisposition: mRes.headers.get('content-disposition') || '',
+                size: Number(mRes.headers.get('content-length') || 0) || null,
+                acceptRanges: false,
+                manifestText,
+              };
+              cacheSet(PROBE_CACHE, cacheKey, out, 60_000, 25);
+              return out;
+            }
           }
-          const refererUrl = validateRemoteUrl(parsedReq.searchParams.get('referer'));
-          const reqHeaders: Record<string, string> = { 'User-Agent': DEFAULT_USER_AGENT_MOBILE };
-          if (refererUrl) {
-            reqHeaders.Referer = refererUrl.toString();
-            reqHeaders.Origin = refererUrl.origin;
-          }
-          try {
-            let headRes = await fetchWithTimeout(
+
+          let headRes = await fetchWithTimeout(
+            target.toString(),
+            {
+              method: 'HEAD',
+              headers: reqHeaders,
+              redirect: 'follow',
+            },
+            10000
+          );
+          if (!headRes.ok || !headRes.headers.get('content-length')) {
+            headRes = await fetchWithTimeout(
               target.toString(),
               {
-                method: 'HEAD',
-                headers: reqHeaders,
+                method: 'GET',
+                headers: { ...reqHeaders, Range: 'bytes=0-0' },
                 redirect: 'follow',
               },
               10000
             );
-            if (!headRes.ok || !headRes.headers.get('content-length')) {
-              headRes = await fetchWithTimeout(
-                target.toString(),
-                {
-                  method: 'GET',
-                  headers: { ...reqHeaders, Range: 'bytes=0-0' },
-                  redirect: 'follow',
-                },
-                10000
-              );
-            }
-            const contentType = headRes.headers.get('content-type') || '';
-            const contentDisposition = headRes.headers.get('content-disposition') || '';
-            let size = Number(headRes.headers.get('content-length') || 0) || null;
-            const cr = headRes.headers.get('content-range');
-            if (cr && cr.includes('/')) {
-              const total = Number(cr.split('/').pop());
-              if (Number.isFinite(total) && total > 0) size = total;
-            }
-            const acceptRanges =
-              headRes.headers.get('accept-ranges') === 'bytes' || headRes.status === 206;
-            const finalUrl = headRes.url || target.toString();
-
-            let manifestText: string | null = null;
-            if (
-              target.pathname.toLowerCase().endsWith('.m3u8') ||
-              target.pathname.toLowerCase().endsWith('.mpd') ||
-              contentType.includes('mpegurl') ||
-              contentType.includes('dash+xml')
-            ) {
-              const mRes = await fetchWithTimeout(
-                target.toString(),
-                {
-                  headers: reqHeaders,
-                  redirect: 'follow',
-                },
-                12000
-              );
-              if (mRes.ok) {
-                manifestText = await mRes.text();
-              }
-            }
-
-            return sendJson(res, 200, {
-              ok: true,
-              finalUrl,
-              contentType,
-              contentDisposition,
-              size,
-              acceptRanges,
-              manifestText,
-            });
-          } catch (err) {
-            return sendJson(res, 200, {
-              ok: false,
-              error: err instanceof Error ? err.message : 'Probe failed',
-            });
           }
-        }
-
-        if (parsedReq.pathname === '/api/media/extract') {
-          const rawUrl = parsedReq.searchParams.get('url');
-          if (!rawUrl) {
-            return sendJson(res, 400, { error: 'Missing URL' });
+          const contentType = headRes.headers.get('content-type') || '';
+          const contentDisposition = headRes.headers.get('content-disposition') || '';
+          let size = Number(headRes.headers.get('content-length') || 0) || null;
+          const cr = headRes.headers.get('content-range');
+          if (cr && cr.includes('/')) {
+            const total = Number(cr.split('/').pop());
+            if (Number.isFinite(total) && total > 0) size = total;
           }
-          const result = await extractMediaWithPatterns(rawUrl);
-          const status = result.error === 'Invalid or restricted URL' ? 400 : 200;
-          return sendJson(res, status, result);
-        }
+          const acceptRanges =
+            headRes.headers.get('accept-ranges') === 'bytes' || headRes.status === 206;
+          const finalUrl = headRes.url || target.toString();
 
-        if (parsedReq.pathname === '/api/media/fetch') {
-          const target = validateRemoteUrl(parsedReq.searchParams.get('url'));
-          if (!target) {
-            return sendJson(res, 400, { error: 'Invalid or restricted URL' });
-          }
-          const refererUrl = validateRemoteUrl(parsedReq.searchParams.get('referer'));
-          try {
-            const upstreamHeaders: Record<string, string> = {
-              'User-Agent': DEFAULT_USER_AGENT_MOBILE,
-            };
-            if (refererUrl) {
-              upstreamHeaders.Referer = refererUrl.toString();
-              upstreamHeaders.Origin = refererUrl.origin;
-            }
-            if (req.headers.range) {
-              upstreamHeaders.Range = String(req.headers.range);
-            }
-            const upstream = await fetchWithTimeout(
+          let manifestText: string | null = null;
+          if (
+            lowerPath.endsWith('.m3u8') ||
+            lowerPath.endsWith('.mpd') ||
+            contentType.includes('mpegurl') ||
+            contentType.includes('dash+xml')
+          ) {
+            const mRes = await fetchWithTimeout(
               target.toString(),
               {
-                headers: upstreamHeaders,
+                headers: reqHeaders,
                 redirect: 'follow',
               },
-              20000,
-              true
+              12000
             );
-            res.statusCode = upstream.status;
-            const ct = upstream.headers.get('content-type');
-            const cl = upstream.headers.get('content-length');
-            const cr = upstream.headers.get('content-range');
-            const ar = upstream.headers.get('accept-ranges');
-            if (ct) res.setHeader('Content-Type', ct);
-            if (cl) res.setHeader('Content-Length', cl);
-            if (cr) res.setHeader('Content-Range', cr);
-            if (ar) res.setHeader('Accept-Ranges', ar);
-            if (!upstream.body) {
-              res.end();
-              return;
+            if (mRes.ok) {
+              manifestText = await mRes.text();
             }
-            const reader = upstream.body.getReader();
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value) res.write(Buffer.from(value));
-            }
-            res.end();
-            return;
-          } catch (err) {
-            return sendJson(res, 502, {
-              error: err instanceof Error ? err.message : 'Fetch proxy failed',
-            });
           }
+
+          const out = {
+            ok: true,
+            finalUrl,
+            contentType,
+            contentDisposition,
+            size,
+            acceptRanges,
+            manifestText,
+          };
+          cacheSet(PROBE_CACHE, cacheKey, out, 60_000, 25);
+          return out;
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : 'Probe failed',
+          };
+        } finally {
+          INFLIGHT_PROBE.delete(cacheKey);
         }
+      })();
+      INFLIGHT_PROBE.set(cacheKey, task);
+    }
+
+    const probeResult = await task;
+    return sendJson(req, res, 200, probeResult);
+  }
+
+  if (parsedReq.pathname === '/api/media/extract') {
+    const rawUrl = parsedReq.searchParams.get('url');
+    if (!rawUrl) {
+      return sendJson(req, res, 400, { error: 'Missing URL' });
+    }
+    const result = await extractMediaWithPatterns(rawUrl);
+    const status = result.error === 'Invalid or restricted URL' ? 400 : 200;
+    return sendJson(req, res, status, result);
+  }
+
+  if (parsedReq.pathname === '/api/media/fetch') {
+    const target = validateRemoteUrl(parsedReq.searchParams.get('url'));
+    if (!target) {
+      return sendJson(req, res, 400, { error: 'Invalid or restricted URL' });
+    }
+    const refererUrl = validateRemoteUrl(parsedReq.searchParams.get('referer'));
+    const upstreamCtrl = new AbortController();
+    let clientClosed = false;
+    const onClientAbort = () => {
+      clientClosed = true;
+      upstreamCtrl.abort();
+    };
+    req.on('close', onClientAbort);
+    res.on('close', onClientAbort);
+
+    try {
+      const upstreamHeaders: Record<string, string> = {
+        'User-Agent': DEFAULT_USER_AGENT_MOBILE,
+      };
+      if (refererUrl) {
+        upstreamHeaders.Referer = refererUrl.toString();
+        upstreamHeaders.Origin = refererUrl.origin;
+      }
+      if (req.headers.range) {
+        upstreamHeaders.Range = String(req.headers.range);
+      }
+      const timeoutId = setTimeout(() => upstreamCtrl.abort(), 20000);
+      const upstream = await fetch(target.toString(), {
+        headers: upstreamHeaders,
+        redirect: 'follow',
+        signal: upstreamCtrl.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (clientClosed || res.destroyed) return;
+      res.statusCode = upstream.status;
+      const ct = upstream.headers.get('content-type');
+      const cl = upstream.headers.get('content-length');
+      const cr = upstream.headers.get('content-range');
+      const ar = upstream.headers.get('accept-ranges');
+      if (ct) res.setHeader('Content-Type', ct);
+      if (cl) res.setHeader('Content-Length', cl);
+      if (cr) res.setHeader('Content-Range', cr);
+      if (ar) res.setHeader('Accept-Ranges', ar);
+      if (!upstream.body) {
+        res.end();
+        return;
+      }
+      const reader = upstream.body.getReader();
+      try {
+        while (!clientClosed && !res.destroyed) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) res.write(Buffer.from(value));
+        }
+      } finally {
+        reader.cancel().catch(() => {});
+        if (!res.writableEnded) res.end();
+      }
+      return;
+    } catch (err) {
+      if (clientClosed || res.destroyed || res.headersSent) {
+        if (!res.writableEnded) res.end();
+        return;
+      }
+      return sendJson(req, res, 502, {
+        error: err instanceof Error ? err.message : 'Fetch proxy failed',
+      });
+    } finally {
+      req.off('close', onClientAbort);
+      res.off('close', onClientAbort);
+    }
+  }
 
   next();
 }
@@ -621,6 +746,23 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, '.'),
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/react-dom') || id.includes('node_modules/react/')) {
+            return 'react-vendor';
+          }
+          if (id.includes('node_modules/lucide-react')) {
+            return 'lucide-icons';
+          }
+          if (id.includes('node_modules/hls.js')) {
+            return 'hls-player';
+          }
+        },
+      },
     },
   },
   server: {

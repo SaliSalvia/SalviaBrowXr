@@ -10,12 +10,19 @@ export const AppSplashOverlay: React.FC<AppSplashOverlayProps> = ({ onFinished }
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-      if (params.get('autostart') === '1' || reduced) {
+      let alreadySeen = false;
+      try {
+        alreadySeen = window.sessionStorage.getItem('salvia_splash_seen') === '1';
+        window.sessionStorage.setItem('salvia_splash_seen', '1');
+      } catch {
+        // ignore storage errors
+      }
+      if (params.get('autostart') === '1' || reduced || alreadySeen) {
         onFinished();
         return;
       }
     }
-    const timer = window.setTimeout(onFinished, 1250);
+    const timer = window.setTimeout(onFinished, 480);
     return () => window.clearTimeout(timer);
   }, [onFinished]);
 

@@ -390,8 +390,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     document.documentElement.dir = isRtl ? 'rtl' : 'ltr';
   }, [locale, isRtl]);
 
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settings));
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settingsRef.current));
+      } catch {
+        // ignore quota errors
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [settings]);
 
   const [route, setRoute] = useState<AppRoute>('home');
@@ -413,7 +422,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const logEvent = useCallback((kind: DiagnosticsEntry['kind'], host: string, event: string) => {
     setDiagnostics((prev) => {
       const next = [{ timestamp: Date.now(), kind, host, event }, ...prev].slice(0, 120);
-      localStorage.setItem(STORAGE_KEYS.diagnostics, JSON.stringify(next));
+      try {
+        localStorage.setItem(STORAGE_KEYS.diagnostics, JSON.stringify(next));
+      } catch {
+        // ignore quota errors
+      }
       return next;
     });
   }, []);
@@ -428,15 +441,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       },
     ])
   );
+  const bookmarksRef = useRef(bookmarks);
+  bookmarksRef.current = bookmarks;
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.bookmarks, JSON.stringify(bookmarks));
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEYS.bookmarks, JSON.stringify(bookmarksRef.current));
+      } catch {
+        // ignore quota errors
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [bookmarks]);
 
   const [history, setHistory] = useState<HistoryItem[]>(() =>
     loadJson<HistoryItem[]>(STORAGE_KEYS.history, [])
   );
+  const historyRef = useRef(history);
+  historyRef.current = history;
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history));
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(historyRef.current));
+      } catch {
+        // ignore quota errors
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [history]);
 
   const [downloads, setDownloads] = useState<DownloadItemRecord[]>(() =>
@@ -458,30 +489,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const now = Date.now();
     if (!hasActiveProgress || now - lastDownloadsSaveRef.current >= 900) {
       lastDownloadsSaveRef.current = now;
-      localStorage.setItem(STORAGE_KEYS.downloads, JSON.stringify(downloads));
+      try {
+        localStorage.setItem(STORAGE_KEYS.downloads, JSON.stringify(downloads));
+      } catch {
+        // ignore quota errors
+      }
       return;
     }
     const timer = window.setTimeout(() => {
       lastDownloadsSaveRef.current = Date.now();
-      localStorage.setItem(STORAGE_KEYS.downloads, JSON.stringify(downloadsRef.current));
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [downloads]);
-
-  useEffect(() => {
-    const flushDownloads = () => {
       try {
         localStorage.setItem(STORAGE_KEYS.downloads, JSON.stringify(downloadsRef.current));
       } catch {
         // ignore quota errors
       }
-    };
-    window.addEventListener('beforeunload', flushDownloads);
-    return () => {
-      window.removeEventListener('beforeunload', flushDownloads);
-      flushDownloads();
-    };
-  }, []);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [downloads]);
 
   const [tabs, setTabs] = useState<Tab[]>(() => {
     const saved = loadJson<Tab[]>(STORAGE_KEYS.tabs, []);
@@ -503,10 +527,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
   const [currentTabId, setCurrentTabId] = useState<string>(() => tabs[0]?.id || 'tab-initial');
 
+  const tabsRef = useRef<Tab[]>(tabs);
+  tabsRef.current = tabs;
   useEffect(() => {
-    const persistable = tabs.filter((tab) => !tab.isPrivate);
-    localStorage.setItem(STORAGE_KEYS.tabs, JSON.stringify(persistable));
+    const timer = window.setTimeout(() => {
+      try {
+        const persistable = tabsRef.current.filter((tab) => !tab.isPrivate);
+        localStorage.setItem(STORAGE_KEYS.tabs, JSON.stringify(persistable));
+      } catch {
+        // ignore quota errors
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [tabs]);
+
+  useEffect(() => {
+    const flushAllState = () => {
+      try {
+        localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(settingsRef.current));
+        localStorage.setItem(STORAGE_KEYS.bookmarks, JSON.stringify(bookmarksRef.current));
+        localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(historyRef.current));
+        localStorage.setItem(
+          STORAGE_KEYS.tabs,
+          JSON.stringify(tabsRef.current.filter((tab) => !tab.isPrivate))
+        );
+        localStorage.setItem(STORAGE_KEYS.downloads, JSON.stringify(downloadsRef.current));
+      } catch {
+        // ignore quota errors
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushAllState();
+    };
+    window.addEventListener('beforeunload', flushAllState);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', flushAllState);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      flushAllState();
+    };
+  }, []);
 
   const hibernatedTabIds = useMemo(() => {
     if (tabs.length <= liveTabLimit) return new Set<string>();
@@ -520,8 +580,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     () => tabs.find((item) => item.id === currentTabId) ?? tabs[0],
     [tabs, currentTabId]
   );
-  const tabsRef = useRef<Tab[]>(tabs);
-  tabsRef.current = tabs;
   const tabAbortRef = useRef<Map<string, AbortController>>(new Map());
 
   const currentTabIdRef = useRef(currentTabId);
@@ -1441,7 +1499,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const startDownloadFromFormat = useCallback(
     (format: MediaFormat, customFilename: string | null) => {
-      const existing = downloads.find(
+      const existing = downloadsRef.current.find(
         (d) =>
           d.url === format.url &&
           (d.status === 'DOWNLOADING' || d.status === 'QUEUED' || d.status === 'PAUSED')
@@ -1483,7 +1541,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsMediaTrayVisible(false);
       showToast(t('download_enqueued'));
     },
-    [downloads, qualitySheet, showToast, t]
+    [qualitySheet, showToast, t]
   );
 
   const startBatchDownloadFromCandidates = useCallback(
@@ -1519,7 +1577,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
 
       const activeUrls = new Set(
-        downloads
+        downloadsRef.current
           .filter((d) => d.status === 'DOWNLOADING' || d.status === 'QUEUED' || d.status === 'PAUSED')
           .map((d) => d.url)
       );
@@ -1563,7 +1621,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsMediaTrayVisible(false);
       }
     },
-    [downloads, showToast, t]
+    [showToast, t]
   );
 
   const pauseDownload = useCallback((id: string) => {
@@ -1626,7 +1684,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const exportDownloadToDevice = useCallback(
     (id: string) => {
-      const target = downloads.find((d) => d.id === id);
+      const target = downloadsRef.current.find((d) => d.id === id);
       if (!target) return;
       const native = getSalviaNative();
       if (native && target.nativeUri) {
@@ -1637,22 +1695,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (liveBlob) {
         triggerBrowserFileSave(liveBlob, target.filename);
       } else {
-        triggerBrowserFileSave(apiUrl(`/api/media/fetch?url=${encodeURIComponent(target.url)}`), target.filename);
+        const refParam = target.pageUrl ? `&referer=${encodeURIComponent(target.pageUrl)}` : '';
+        triggerBrowserFileSave(
+          apiUrl(`/api/media/fetch?url=${encodeURIComponent(target.url)}${refParam}`),
+          target.filename
+        );
       }
       setDownloads((prev) =>
         prev.map((d) => (d.id === id ? { ...d, exportedToGallery: true } : d))
       );
       showToast(t('download_exported'));
     },
-    [downloads, showToast, t]
+    [showToast, t]
   );
 
   const playDownloadInApp = useCallback(
     (id: string) => {
-      const target = downloads.find((d) => d.id === id);
+      const target = downloadsRef.current.find((d) => d.id === id);
       if (!target) return;
-      const liveBlob = getCompletedBlobUrl(id) || (target.blobUrl?.startsWith('https://appassets.androidplatform.net/') ? target.blobUrl : null);
-      const playableUrl = liveBlob || (target.isHls ? apiUrl(`/api/media/fetch?url=${encodeURIComponent(target.url)}`) : target.url);
+      const liveBlob =
+        getCompletedBlobUrl(id) ||
+        (target.blobUrl?.startsWith('https://appassets.androidplatform.net/') ? target.blobUrl : null);
+      const refParam = target.pageUrl ? `&referer=${encodeURIComponent(target.pageUrl)}` : '';
+      const playableUrl =
+        liveBlob ||
+        (target.isHls || target.isDash
+          ? apiUrl(`/api/media/fetch?url=${encodeURIComponent(target.url)}${refParam}`)
+          : target.url);
       navigate('player', {
         player: {
           url: playableUrl,
@@ -1662,12 +1731,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         },
       });
     },
-    [downloads, navigate]
+    [navigate]
   );
 
   const shareDownload = useCallback(
     async (id: string) => {
-      const target = downloads.find((d) => d.id === id);
+      const target = downloadsRef.current.find((d) => d.id === id);
       if (!target) return;
       const native = getSalviaNative();
       if (native && target.nativeUri) {
@@ -1686,7 +1755,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await navigator.clipboard?.writeText(target.url);
       showToast(t('link_copied'));
     },
-    [downloads, showToast, t]
+    [showToast, t]
   );
 
   // Locked Folder State
@@ -1887,7 +1956,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: `bridge-${idx}-${item.url}`,
         pageUrl,
         mediaUrl: item.url,
-        title: tabPages[tabId]?.title || item.url.split('/').pop(),
+        title: tabPagesRef.current[tabId]?.title || item.url.split('/').pop(),
         mimeType: item.type || (item.tag === 'audio' ? 'audio/mpeg' : 'video/mp4'),
         extension: item.url.split('.').pop()?.split('?')[0]?.toLowerCase() || 'mp4',
         source: 'DOM',
@@ -1902,7 +1971,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }));
       mergeTabCandidates(tabId, converted);
     },
-    [tabPages, mergeTabCandidates]
+    [mergeTabCandidates]
   );
 
   const reportVisibleMediaFromBridge = useCallback((tabId: string, _pageUrl: string, mediaUrl: string) => {
@@ -2112,126 +2181,260 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [downloads, isLockedFolderUnlocked]
   );
 
-  const value: AppContextValue = {
-    route,
-    downloadsInitialTab,
-    playerTarget,
-    navigate,
-    locale,
-    isRtl,
-    t,
-    resolvedTheme,
-    isBatterySaverActive,
-    batteryLevel,
-    liveTabLimit,
-    allExtensions,
-    enabledExtensionCount,
-    toggleExtension,
-    addCustomExtension,
-    deleteCustomExtension,
-    getExtensionPayloadForUrl,
-    settings,
-    updateSettings,
-    tabs,
-    currentTabId,
-    currentTab,
-    hibernatedTabIds,
-    tabPages,
-    tabMedia,
-    tabVisibleMedia,
-    isTabSwitcherVisible,
-    openTabSwitcher: () => setIsTabSwitcherVisible(true),
-    closeTabSwitcher: () => setIsTabSwitcherVisible(false),
-    createTab,
-    switchTab,
-    closeTab,
-    navigateCurrentTab,
-    openPastedLink,
-    isExtractingLink,
-    extractFromPastedPage,
-    reloadCurrentTab,
-    stopLoadingCurrentTab,
-    goBackCurrentTab,
-    goForwardCurrentTab,
-    goHomeInCurrentTab,
-    blockedCleartextUrl,
-    allowCleartextAndRetry,
-    dismissCleartextBlock,
-    isAdBlockOffForCurrentSite,
-    toggleAdBlockForCurrentSite,
-    bookmarks,
-    isCurrentTabBookmarked,
-    addBookmarkForCurrentTab,
-    toggleBookmarkForCurrentTab,
-    deleteBookmark,
-    openUrlFromLibrary,
-    duplicateTab,
-    closeOtherTabs,
-    pageZoom,
-    setPageZoom,
-    history,
-    deleteHistoryEntry,
-    clearHistory,
-    clearCookiesAndStorage,
-    clearAllBrowsingData,
-    getAddressSuggestions,
-    currentTabCandidates,
-    rankedTabCandidates,
-    currentMainCandidate,
-    isMediaTrayVisible,
-    openMediaTray: () => setIsMediaTrayVisible(true),
-    closeMediaTray: () => setIsMediaTrayVisible(false),
-    qualitySheet,
-    openQualitySheetForCandidate,
-    closeQualitySheet: () => setQualitySheet(null),
-    startDownloadFromFormat,
-    startBatchDownloadFromCandidates,
-    downloadMainMedia,
-    recording,
-    startRecordingPlayback,
-    stopRecordingPlayback,
-    downloads,
-    activeDownloadsCount,
-    completedDownloadsCount,
-    pauseDownload,
-    resumeDownload,
-    cancelDownload,
-    retryDownload,
-    deleteDownload,
-    clearDownloadsByBucket,
-    exportDownloadToDevice,
-    playDownloadInApp,
-    shareDownload,
-    setDownloadLocked,
-    isLockedFolderConfigured,
-    isLockedFolderUnlocked,
-    isUnlockingFolder,
-    unlockLockedFolder,
-    lockLockedFolder,
-    saveLockedFolderPassword,
-    removeLockedFolderPasswordAction,
-    findInPage,
-    openFindInPage: () => setFindInPage({ query: '', matches: 0, activeMatch: 0 }),
-    closeFindInPage: () => {
-      getSalviaNative()?.nativeClearFindInPage?.();
-      setFindInPage(null);
-    },
-    updateFindQuery: (query: string) => setFindInPage((prev) => (prev ? { ...prev, query } : { query, matches: 0, activeMatch: 0 })),
-    setFindResult: (matches: number, activeMatch: number) =>
+  const openTabSwitcher = useCallback(() => setIsTabSwitcherVisible(true), []);
+  const closeTabSwitcher = useCallback(() => setIsTabSwitcherVisible(false), []);
+  const openMediaTray = useCallback(() => setIsMediaTrayVisible(true), []);
+  const closeMediaTray = useCallback(() => setIsMediaTrayVisible(false), []);
+  const closeQualitySheet = useCallback(() => setQualitySheet(null), []);
+  const openFindInPage = useCallback(() => setFindInPage({ query: '', matches: 0, activeMatch: 0 }), []);
+  const closeFindInPage = useCallback(() => {
+    getSalviaNative()?.nativeClearFindInPage?.();
+    setFindInPage(null);
+  }, []);
+  const updateFindQuery = useCallback(
+    (query: string) =>
+      setFindInPage((prev) => (prev ? { ...prev, query } : { query, matches: 0, activeMatch: 0 })),
+    []
+  );
+  const setFindResult = useCallback(
+    (matches: number, activeMatch: number) =>
       setFindInPage((prev) => (prev ? { ...prev, matches, activeMatch } : null)),
-    isNativeBrowserEngine,
-    nativeNavCaps,
-    reportDetectedMediaFromBridge,
-    reportVisibleMediaFromBridge,
-    connectionKind,
-    updateCheck,
-    checkForUpdates,
-    dismissUpdateDialog,
-    diagnostics,
-    exportDiagnostics,
-    toastMessage,
-    showToast,
-  };
+    []
+  );
+
+  const value: AppContextValue = useMemo(
+    () => ({
+      route,
+      downloadsInitialTab,
+      playerTarget,
+      navigate,
+      locale,
+      isRtl,
+      t,
+      resolvedTheme,
+      isBatterySaverActive,
+      batteryLevel,
+      liveTabLimit,
+      allExtensions,
+      enabledExtensionCount,
+      toggleExtension,
+      addCustomExtension,
+      deleteCustomExtension,
+      getExtensionPayloadForUrl,
+      settings,
+      updateSettings,
+      tabs,
+      currentTabId,
+      currentTab,
+      hibernatedTabIds,
+      tabPages,
+      tabMedia,
+      tabVisibleMedia,
+      isTabSwitcherVisible,
+      openTabSwitcher,
+      closeTabSwitcher,
+      createTab,
+      switchTab,
+      closeTab,
+      navigateCurrentTab,
+      openPastedLink,
+      isExtractingLink,
+      extractFromPastedPage,
+      reloadCurrentTab,
+      stopLoadingCurrentTab,
+      goBackCurrentTab,
+      goForwardCurrentTab,
+      goHomeInCurrentTab,
+      blockedCleartextUrl,
+      allowCleartextAndRetry,
+      dismissCleartextBlock,
+      isAdBlockOffForCurrentSite,
+      toggleAdBlockForCurrentSite,
+      bookmarks,
+      isCurrentTabBookmarked,
+      addBookmarkForCurrentTab,
+      toggleBookmarkForCurrentTab,
+      deleteBookmark,
+      openUrlFromLibrary,
+      duplicateTab,
+      closeOtherTabs,
+      pageZoom,
+      setPageZoom,
+      history,
+      deleteHistoryEntry,
+      clearHistory,
+      clearCookiesAndStorage,
+      clearAllBrowsingData,
+      getAddressSuggestions,
+      currentTabCandidates,
+      rankedTabCandidates,
+      currentMainCandidate,
+      isMediaTrayVisible,
+      openMediaTray,
+      closeMediaTray,
+      qualitySheet,
+      openQualitySheetForCandidate,
+      closeQualitySheet,
+      startDownloadFromFormat,
+      startBatchDownloadFromCandidates,
+      downloadMainMedia,
+      recording,
+      startRecordingPlayback,
+      stopRecordingPlayback,
+      downloads,
+      activeDownloadsCount,
+      completedDownloadsCount,
+      pauseDownload,
+      resumeDownload,
+      cancelDownload,
+      retryDownload,
+      deleteDownload,
+      clearDownloadsByBucket,
+      exportDownloadToDevice,
+      playDownloadInApp,
+      shareDownload,
+      setDownloadLocked,
+      isLockedFolderConfigured,
+      isLockedFolderUnlocked,
+      isUnlockingFolder,
+      unlockLockedFolder,
+      lockLockedFolder,
+      saveLockedFolderPassword,
+      removeLockedFolderPasswordAction,
+      findInPage,
+      openFindInPage,
+      closeFindInPage,
+      updateFindQuery,
+      setFindResult,
+      isNativeBrowserEngine,
+      nativeNavCaps,
+      reportDetectedMediaFromBridge,
+      reportVisibleMediaFromBridge,
+      connectionKind,
+      updateCheck,
+      checkForUpdates,
+      dismissUpdateDialog,
+      diagnostics,
+      exportDiagnostics,
+      toastMessage,
+      showToast,
+    }),
+    [
+      route,
+      downloadsInitialTab,
+      playerTarget,
+      navigate,
+      locale,
+      isRtl,
+      t,
+      resolvedTheme,
+      isBatterySaverActive,
+      batteryLevel,
+      liveTabLimit,
+      allExtensions,
+      enabledExtensionCount,
+      toggleExtension,
+      addCustomExtension,
+      deleteCustomExtension,
+      getExtensionPayloadForUrl,
+      settings,
+      updateSettings,
+      tabs,
+      currentTabId,
+      currentTab,
+      hibernatedTabIds,
+      tabPages,
+      tabMedia,
+      tabVisibleMedia,
+      isTabSwitcherVisible,
+      openTabSwitcher,
+      closeTabSwitcher,
+      createTab,
+      switchTab,
+      closeTab,
+      navigateCurrentTab,
+      openPastedLink,
+      isExtractingLink,
+      extractFromPastedPage,
+      reloadCurrentTab,
+      stopLoadingCurrentTab,
+      goBackCurrentTab,
+      goForwardCurrentTab,
+      goHomeInCurrentTab,
+      blockedCleartextUrl,
+      allowCleartextAndRetry,
+      dismissCleartextBlock,
+      isAdBlockOffForCurrentSite,
+      toggleAdBlockForCurrentSite,
+      bookmarks,
+      isCurrentTabBookmarked,
+      addBookmarkForCurrentTab,
+      toggleBookmarkForCurrentTab,
+      deleteBookmark,
+      openUrlFromLibrary,
+      duplicateTab,
+      closeOtherTabs,
+      pageZoom,
+      history,
+      deleteHistoryEntry,
+      clearHistory,
+      clearCookiesAndStorage,
+      clearAllBrowsingData,
+      getAddressSuggestions,
+      currentTabCandidates,
+      rankedTabCandidates,
+      currentMainCandidate,
+      isMediaTrayVisible,
+      openMediaTray,
+      closeMediaTray,
+      qualitySheet,
+      openQualitySheetForCandidate,
+      closeQualitySheet,
+      startDownloadFromFormat,
+      startBatchDownloadFromCandidates,
+      downloadMainMedia,
+      recording,
+      startRecordingPlayback,
+      stopRecordingPlayback,
+      downloads,
+      activeDownloadsCount,
+      completedDownloadsCount,
+      pauseDownload,
+      resumeDownload,
+      cancelDownload,
+      retryDownload,
+      deleteDownload,
+      clearDownloadsByBucket,
+      exportDownloadToDevice,
+      playDownloadInApp,
+      shareDownload,
+      setDownloadLocked,
+      isLockedFolderConfigured,
+      isLockedFolderUnlocked,
+      isUnlockingFolder,
+      unlockLockedFolder,
+      lockLockedFolder,
+      saveLockedFolderPassword,
+      removeLockedFolderPasswordAction,
+      findInPage,
+      openFindInPage,
+      closeFindInPage,
+      updateFindQuery,
+      setFindResult,
+      isNativeBrowserEngine,
+      nativeNavCaps,
+      reportDetectedMediaFromBridge,
+      reportVisibleMediaFromBridge,
+      connectionKind,
+      updateCheck,
+      checkForUpdates,
+      dismissUpdateDialog,
+      diagnostics,
+      exportDiagnostics,
+      toastMessage,
+      showToast,
+    ]
+  );
 
   // Sync browser runtime preferences & extensions to Android native WebView cleanly
   useEffect(() => {

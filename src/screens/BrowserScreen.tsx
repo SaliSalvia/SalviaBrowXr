@@ -105,28 +105,49 @@ export const BrowserScreen: React.FC = () => {
   const [addressFocused, setAddressFocused] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
+  const iframeDocGenRef = useRef(0);
+  const lastAppliedExtKeyRef = useRef('');
+
   useEffect(() => {
     setAddressInput(currentTab.url || '');
   }, [currentTab.id, currentTab.url]);
 
-  const syncExtensionsToIframe = useCallback(() => {
-    const win = iframeRef.current?.contentWindow;
-    if (!win || !currentTab.url) return;
-    const payload = getExtensionPayloadForUrl(currentTab.url);
-    win.postMessage(
-      {
-        target: 'salvia-iframe',
-        type: 'apply-extensions',
-        css: payload.css,
-        js: payload.js,
-      },
-      '*'
-    );
-  }, [currentTab.url, getExtensionPayloadForUrl]);
+  useEffect(() => {
+    iframeDocGenRef.current = 0;
+    lastAppliedExtKeyRef.current = '';
+  }, [currentTab.id, page?.html]);
+
+  const applyExtensionsOnce = useCallback(
+    (gen: number) => {
+      const win = iframeRef.current?.contentWindow;
+      if (!win || !currentTab.url || gen <= 0) return;
+      const payload = getExtensionPayloadForUrl(currentTab.url);
+      const signature = `${gen}|${currentTab.id}|${currentTab.url}|${payload.css}|${payload.js}`;
+      if (signature === lastAppliedExtKeyRef.current) return;
+      lastAppliedExtKeyRef.current = signature;
+      win.postMessage(
+        {
+          target: 'salvia-iframe',
+          type: 'apply-extensions',
+          css: payload.css,
+          js: payload.js,
+        },
+        '*'
+      );
+    },
+    [currentTab.id, currentTab.url, getExtensionPayloadForUrl]
+  );
+
+  const handleIframeLoad = useCallback(() => {
+    iframeDocGenRef.current += 1;
+    applyExtensionsOnce(iframeDocGenRef.current);
+  }, [applyExtensionsOnce]);
 
   useEffect(() => {
-    syncExtensionsToIframe();
-  }, [syncExtensionsToIframe, page?.html, settings.enabledExtensionIds, settings.customExtensions]);
+    if (iframeDocGenRef.current > 0) {
+      applyExtensionsOnce(iframeDocGenRef.current);
+    }
+  }, [applyExtensionsOnce, settings.enabledExtensionIds, settings.customExtensions]);
 
   // Desktop keyboard shortcuts (Ctrl/Cmd + L, T, F)
   useEffect(() => {
@@ -907,7 +928,7 @@ export const BrowserScreen: React.FC = () => {
               ref={iframeRef}
               title={page.title || currentTab.url}
               srcDoc={page.html}
-              onLoad={syncExtensionsToIframe}
+              onLoad={handleIframeLoad}
               sandbox={
                 settings.isJavaScriptEnabled
                   ? 'allow-scripts allow-forms allow-popups'

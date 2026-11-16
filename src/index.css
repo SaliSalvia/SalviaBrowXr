@@ -1,0 +1,321 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/vazirmatn_regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/vazirmatn_medium.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/vazirmatn_bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Light Theme (Default Root) — Crisp Cosmic Porcelain */
+:root {
+  --salvia-bg: #f4f3fb;
+  --salvia-deep-cosmic: #edeaf9;
+  --salvia-surface: #ffffff;
+  --salvia-surface-muted: #ebe7f8;
+  --salvia-elevated: #e3ddf6;
+  --salvia-border: #d2cae9;
+  --salvia-border-strong: #b9aee0;
+
+  --salvia-text: #151129;
+  --salvia-text-muted: #4b456b;
+  --salvia-text-subtle: #666089;
+
+  --salvia-iris: #6c46f2;
+  --salvia-iris-light: #5c36e5;
+  --salvia-iris-deep: #4e2ad6;
+  --salvia-iris-soft: rgba(108, 70, 242, 0.12);
+
+  --salvia-cyan: #0284c7;
+  --salvia-cyan-text: #0369a1;
+  --salvia-cyan-container: #dff2fe;
+  --salvia-cyan-soft: rgba(2, 132, 199, 0.12);
+
+  --salvia-gold: #a16207;
+  --salvia-gold-bright: #ca8a04;
+  --salvia-gold-soft: rgba(202, 138, 4, 0.14);
+
+  --salvia-pink: #c026d3;
+  --salvia-pink-text: #a21caf;
+  --salvia-pink-soft: rgba(192, 38, 211, 0.11);
+
+  --salvia-overlay: rgba(21, 17, 41, 0.56);
+  --salvia-card-shadow: 0 6px 24px -10px rgba(45, 32, 95, 0.12);
+
+  /* Legacy alias variables preserved */
+  --salvia-matte-charcoal: var(--salvia-bg);
+  --salvia-pearl: var(--salvia-text);
+  --salvia-silver-mid: var(--salvia-text-muted);
+  --salvia-silver-deep: var(--salvia-text-subtle);
+}
+
+/* Dark Theme — Signature OLED Cosmic Nocturne */
+.dark {
+  --salvia-bg: #000000;
+  --salvia-deep-cosmic: #070510;
+  --salvia-surface: #100c20;
+  --salvia-surface-muted: #140f27;
+  --salvia-elevated: #18122e;
+  --salvia-border: #312556;
+  --salvia-border-strong: #433275;
+
+  --salvia-text: #f4f2ff;
+  --salvia-text-muted: #a6acc4;
+  --salvia-text-subtle: #7f86a3;
+
+  --salvia-iris: #8f6bff;
+  --salvia-iris-light: #c3aeff;
+  --salvia-iris-deep: #5a34d9;
+  --salvia-iris-soft: rgba(143, 107, 255, 0.18);
+
+  --salvia-cyan: #4cc4ff;
+  --salvia-cyan-text: #a8e6ff;
+  --salvia-cyan-container: #0b2c44;
+  --salvia-cyan-soft: rgba(76, 196, 255, 0.14);
+
+  --salvia-gold: #d9ae54;
+  --salvia-gold-bright: #f2cd72;
+  --salvia-gold-soft: rgba(217, 174, 84, 0.16);
+
+  --salvia-pink: #ef7bf0;
+  --salvia-pink-text: #f3a6f4;
+  --salvia-pink-soft: rgba(239, 123, 240, 0.16);
+
+  --salvia-overlay: rgba(0, 0, 0, 0.78);
+  --salvia-card-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.65);
+
+  --salvia-matte-charcoal: #000000;
+  --salvia-pearl: #f4f2ff;
+  --salvia-silver-mid: #a6acc4;
+  --salvia-silver-deep: #7f86a3;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background-color: var(--salvia-bg);
+  color: var(--salvia-text);
+  font-family: "Plus Jakarta Sans", "Outfit", system-ui, -apple-system, sans-serif;
+}
+
+.font-display {
+  font-family: "Outfit", "Plus Jakarta Sans", system-ui, sans-serif;
+}
+
+.font-data {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+html[dir="rtl"],
+html[dir="rtl"] body,
+html[dir="rtl"] #root,
+html[dir="rtl"] .font-display {
+  font-family: "Vazirmatn", "Plus Jakarta Sans", system-ui, sans-serif;
+  letter-spacing: 0 !important;
+  line-height: 1.72;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@layer base {
+  *:focus-visible {
+    outline: 2px solid var(--salvia-cyan);
+    outline-offset: 2px;
+  }
+}
+
+/* Custom sleek scrollbar matching active theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(143, 107, 255, 0.28);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(76, 196, 255, 0.45);
+}
+
+@keyframes salviaSplashBreath {
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes salviaHaloBreath {
+  0% {
+    opacity: 0;
+  }
+  45% {
+    opacity: 0.72;
+  }
+  70% {
+    opacity: 0.72;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes salviaSpinSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes salviaFloatingWake {
+  0% {
+    transform: scale(0.86);
+    box-shadow: 0 0 0 0 rgba(76, 196, 255, 0.72), 0 0 0 0 rgba(143, 107, 255, 0.45);
+  }
+  45% {
+    transform: scale(1.12);
+    box-shadow: 0 0 28px 10px rgba(76, 196, 255, 0.42), 0 0 0 14px rgba(143, 107, 255, 0);
+  }
+  75% {
+    transform: scale(0.98);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 10px 30px rgba(143, 107, 255, 0.44), 0 0 18px rgba(76, 196, 255, 0.24);
+  }
+}
+
+@keyframes salviaSheetIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.985);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes salviaMenuIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes salviaFadeUp {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.animate-salvia-splash {
+  animation: salviaSplashBreath 1100ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-salvia-halo {
+  animation: salviaHaloBreath 1100ms ease-in-out forwards;
+}
+
+.animate-salvia-comet {
+  animation: salviaSpinSlow 2400ms linear infinite;
+}
+
+.animate-salvia-wake {
+  animation: salviaFloatingWake 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-salvia-sheet-in {
+  animation: salviaSheetIn 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+.animate-salvia-menu-in {
+  animation: salviaMenuIn 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+.animate-salvia-fade-up {
+  animation: salviaFadeUp 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Battery Saver mode reduces GPU blur layers and infinite animations */
+.salvia-battery-saver .animate-salvia-comet,
+.salvia-battery-saver .animate-salvia-wake,
+.salvia-battery-saver .animate-pulse {
+  animation: none !important;
+}
+
+.salvia-battery-saver .animate-salvia-sheet-in,
+.salvia-battery-saver .animate-salvia-menu-in,
+.salvia-battery-saver .animate-salvia-fade-up {
+  animation-duration: 60ms !important;
+}
+
+.salvia-battery-saver .backdrop-blur-md,
+.salvia-battery-saver .backdrop-blur-sm,
+.salvia-battery-saver .backdrop-blur-lg {
+  backdrop-filter: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-salvia-splash,
+  .animate-salvia-halo,
+  .animate-salvia-comet,
+  .animate-salvia-wake,
+  .animate-salvia-sheet-in,
+  .animate-salvia-menu-in,
+  .animate-salvia-fade-up {
+    animation-duration: 1ms !important;
+  }
+}

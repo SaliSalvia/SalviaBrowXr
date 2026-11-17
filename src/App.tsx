@@ -65,6 +65,9 @@ const SalviaShell: React.FC = () => {
     };
     const prefetch = () => {
       void import('./screens/BrowserScreen');
+      void import('./components/TabSwitcher');
+      void import('./components/MediaTraySheet');
+      void import('./components/MediaQualitySelectionSheet');
     };
     if (typeof win.requestIdleCallback === 'function') {
       const id = win.requestIdleCallback(prefetch, { timeout: 1500 });
@@ -100,6 +103,8 @@ const SalviaShell: React.FC = () => {
     <>
       <Suspense fallback={<div className="min-h-screen bg-[var(--salvia-bg)]" />}>
         {renderScreen()}
+      </Suspense>
+      <Suspense fallback={null}>
         {isTabSwitcherVisible ? <TabSwitcher /> : null}
         {isMediaTrayVisible ? <MediaTraySheet /> : null}
         {qualitySheet ? <MediaQualitySelectionSheet /> : null}

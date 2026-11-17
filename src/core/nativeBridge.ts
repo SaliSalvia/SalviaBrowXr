@@ -82,6 +82,7 @@ export interface SalviaNativeApi {
   nativeCloseTab?: (tabId: string) => void;
   nativeSetAppearance?: (isDark: boolean, batterySaverActive: boolean) => void;
   nativeSetExtensions?: (css: string, js: string) => void;
+  nativeDeepScan?: () => void;
 }
 
 type BooleanLike = boolean;

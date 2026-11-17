@@ -7,6 +7,11 @@ import {
 } from './nativeBridge';
 import { fetchWithRetry, parseIsoDurationSeconds } from './retryPolicy';
 import { effectiveSegmentConcurrency } from './batteryPolicy';
+import {
+  canUseParallelRange,
+  computeByteRanges,
+  parseTotalSizeFromContentRange,
+} from './rangeChunkPlanner';
 
 export interface ActiveTransferCallbacks {
   onProgress: (
@@ -327,7 +332,8 @@ function parseHlsMediaPlaylist(lines: string[], baseUrl: string): HlsMediaPlan {
 }
 
 function pickBestVariant(lines: string[], baseUrl: string): string | null {
-  let best: { url: string; bandwidth: number; height: number } | null = null;
+  let bestMuxed: { url: string; bandwidth: number; height: number } | null = null;
+  let sawSeparateAudio = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line.startsWith('#EXT-X-STREAM-INF:')) continue;
@@ -337,31 +343,33 @@ function pickBestVariant(lines: string[], baseUrl: string): string | null {
     const resolved = absolute(baseUrl, nextUrl);
     if (!resolved) continue;
     if (attrs.AUDIO) {
-      throw new UnsupportedMediaError(
-        'HLS_SEPARATE_AUDIO: this variant keeps audio in a separate rendition, which this build does not mux'
-      );
+      sawSeparateAudio = true;
+      continue;
     }
     const bandwidth = Number(attrs.BANDWIDTH || attrs['AVERAGE-BANDWIDTH'] || 0) || 0;
     const resolution = (attrs.RESOLUTION || '').split('x');
     const height = Number(resolution[1] || 0) || 0;
-    if (!best || height > best.height || (height === best.height && bandwidth > best.bandwidth)) {
-      best = { url: resolved, bandwidth, height };
+    if (
+      !bestMuxed ||
+      height > bestMuxed.height ||
+      (height === bestMuxed.height && bandwidth > bestMuxed.bandwidth)
+    ) {
+      bestMuxed = { url: resolved, bandwidth, height };
     }
   }
-  return best?.url ?? null;
+  if (!bestMuxed && sawSeparateAudio) {
+    throw new UnsupportedMediaError(
+      'HLS_SEPARATE_AUDIO: this variant keeps audio in a separate rendition, which this build does not mux'
+    );
+  }
+  return bestMuxed?.url ?? null;
 }
 
-async function decryptAes128(
-  data: Uint8Array,
+async function fetchAes128Key(
   keyUri: string,
-  iv: Uint8Array,
   referer: string | null | undefined,
   signal: AbortSignal
-): Promise<Uint8Array> {
-  if (data.byteLength === 0) return data;
-  if (data.byteLength % 16 !== 0) {
-    throw new UnsupportedMediaError('HLS_DECRYPT: encrypted segment length is not a multiple of 16');
-  }
+): Promise<CryptoKey> {
   if (typeof crypto === 'undefined' || !crypto.subtle) {
     throw new UnsupportedMediaError('HLS_DECRYPT: WebCrypto is unavailable in this runtime');
   }
@@ -373,6 +381,9 @@ async function decryptAes128(
       { maxRetries: 3, baseDelayMs: 400, signal, label: 'HLS key HTTP' }
     );
   } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw err;
+    }
     throw new UnsupportedMediaError(
       `HLS_KEY_HTTP: ${err instanceof Error ? err.message : 'key request failed'}`
     );
@@ -381,9 +392,37 @@ async function decryptAes128(
   if (rawKey.byteLength !== 16) {
     throw new UnsupportedMediaError('HLS_KEY_INVALID: AES-128 keys must be 16 bytes');
   }
-  const cryptoKey = await crypto.subtle.importKey('raw', rawKey, { name: 'AES-CBC' }, false, [
-    'decrypt',
-  ]);
+  return crypto.subtle.importKey('raw', rawKey, { name: 'AES-CBC' }, false, ['decrypt']);
+}
+
+async function decryptAes128(
+  data: Uint8Array,
+  keyUri: string,
+  iv: Uint8Array,
+  referer: string | null | undefined,
+  signal: AbortSignal,
+  keyCache?: Map<string, Promise<CryptoKey>>
+): Promise<Uint8Array> {
+  if (data.byteLength === 0) return data;
+  if (data.byteLength % 16 !== 0) {
+    throw new UnsupportedMediaError('HLS_DECRYPT: encrypted segment length is not a multiple of 16');
+  }
+  if (typeof crypto === 'undefined' || !crypto.subtle) {
+    throw new UnsupportedMediaError('HLS_DECRYPT: WebCrypto is unavailable in this runtime');
+  }
+  let keyPromise = keyCache?.get(keyUri);
+  if (!keyPromise) {
+    keyPromise = fetchAes128Key(keyUri, referer, signal);
+    if (keyCache) {
+      keyCache.set(keyUri, keyPromise);
+      keyPromise.catch(() => {
+        if (keyCache.get(keyUri) === keyPromise) {
+          keyCache.delete(keyUri);
+        }
+      });
+    }
+  }
+  const cryptoKey = await keyPromise;
   const ivBuffer = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer;
   const plain = await crypto.subtle.decrypt(
     { name: 'AES-CBC', iv: ivBuffer },
@@ -444,6 +483,7 @@ async function fetchHlsSegments(
   if (plan.segments.length === 0) throw new Error('HLS_EMPTY: the playlist contains no segments');
 
   const chunks: Uint8Array[] = new Array(plan.segments.length);
+  const keyCache = new Map<string, Promise<CryptoKey>>();
   let downloaded = 0;
 
   const fetchRange = async (
@@ -472,7 +512,8 @@ async function fetchHlsSegments(
             plan.initSegment.key.uri,
             plan.initSegment.key.iv ?? new Uint8Array(16),
             referer,
-            signal
+            signal,
+            keyCache
           )
         : rawInit;
     downloaded += initBytes.byteLength;
@@ -486,7 +527,8 @@ async function fetchHlsSegments(
           segment.key.uri,
           segment.key.iv ?? sequenceIv(segment.sequence),
           referer,
-          signal
+          signal,
+          keyCache
         )
       : raw;
     chunks[index] = bytes;
@@ -768,7 +810,90 @@ export async function startTransfer(
     if (pending && pending.url !== url) partialTransfers.delete(downloadId);
     // Only resume when the bytes we already hold match the offset the row reports.
     const offset = buffered > 0 && requestedOffset === buffered ? buffered : 0;
-    if (offset === 0) partialTransfers.delete(downloadId);
+    if (offset === 0) {
+      partialTransfers.delete(downloadId);
+    } else {
+      // Seed state before async network I/O so pausing during resume handshake never wipes carried bytes.
+      state.downloadedBytes = offset;
+      for (const carried of keptParts) bufferedParts.push(carried);
+    }
+
+    const requestedConns = Math.max(
+      1,
+      Math.min(8, Math.floor(options?.parallelConnections ?? 4))
+    );
+    const effectiveConns = options?.batterySaverActive ? Math.min(2, requestedConns) : requestedConns;
+
+    if (offset === 0 && effectiveConns > 1) {
+      try {
+        const probeRes = await fetch(
+          proxyUrl(url, options?.referer),
+          { method: 'GET', headers: { Range: 'bytes=0-0' }, signal: controller.signal }
+        );
+        const cr = probeRes.headers?.get('content-range');
+        const totalSize =
+          parseTotalSizeFromContentRange(cr) ??
+          (probeRes.status === 200
+            ? Number(probeRes.headers?.get('content-length') || 0) || null
+            : null);
+        const supportsRange =
+          probeRes.status === 206 ||
+          probeRes.headers?.get('accept-ranges')?.toLowerCase() === 'bytes';
+        const probeMime =
+          probeRes.headers?.get('content-type') || mimeType || 'application/octet-stream';
+        await probeRes.body?.cancel?.().catch(() => {});
+
+        if (canUseParallelRange(totalSize, supportsRange, effectiveConns) && totalSize !== null) {
+          const ranges = computeByteRanges(totalSize, effectiveConns);
+          const orderedChunks = new Array<Uint8Array>(ranges.length);
+          let chunkBytesDone = 0;
+          let fallbackNeeded = false;
+
+          await runBounded(ranges, effectiveConns, async (chunk) => {
+            if (controller.signal.aborted || fallbackNeeded) return;
+            const partRes = await fetchWithRetry(
+              proxyUrl(url, options?.referer),
+              {
+                signal: controller.signal,
+                headers: { Range: `bytes=${chunk.start}-${chunk.end}` },
+              },
+              { maxRetries: 3, baseDelayMs: 350, signal: controller.signal, label: 'Range HTTP' }
+            );
+            if (partRes.status !== 206) {
+              fallbackNeeded = true;
+              await partRes.body?.cancel?.().catch(() => {});
+              return;
+            }
+            const bytes = new Uint8Array(await partRes.arrayBuffer());
+            orderedChunks[chunk.index] = bytes;
+            chunkBytesDone += bytes.byteLength;
+            reportSpeed(chunkBytesDone, totalSize);
+          });
+
+          if (!fallbackNeeded && !controller.signal.aborted && orderedChunks.every(Boolean)) {
+            const blobParts: BlobPart[] = orderedChunks.map(
+              (chunk) => chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer
+            );
+            const blob = new Blob(blobParts, { type: probeMime });
+            reportSpeed(blob.size, totalSize, true);
+            const blobUrl = URL.createObjectURL(blob);
+            completedBlobUrls.set(downloadId, blobUrl);
+            partialTransfers.delete(downloadId);
+            callbacks.onComplete(blobUrl, blob.size, probeMime, null);
+            return;
+          }
+        }
+      } catch (probeErr) {
+        if (
+          state.reason === 'pause' ||
+          state.reason === 'cancel' ||
+          (probeErr instanceof DOMException && probeErr.name === 'AbortError')
+        ) {
+          throw probeErr;
+        }
+        // Gracefully fall back to single-stream download below
+      }
+    }
 
     const headers: Record<string, string> = {};
     if (offset > 0) headers.Range = `bytes=${offset}-`;
@@ -780,13 +905,22 @@ export async function startTransfer(
 
     // The proxy mirrors upstream status; only honour the offset when the server really resumed.
     resumeOffset = res.status === 206 ? offset : 0;
-    const carriedParts: Uint8Array[] = resumeOffset > 0 ? keptParts : [];
+    if (resumeOffset === 0 && bufferedParts.length > 0) {
+      bufferedParts.length = 0;
+      state.downloadedBytes = 0;
+      partialTransfers.delete(downloadId);
+    }
     const headerTotal = Number(res.headers.get('content-length') || 0) || null;
     const declaredTotal = headerTotal !== null ? headerTotal + resumeOffset : null;
     const contentType = res.headers.get('content-type') || mimeType || 'application/octet-stream';
 
     if (!res.body) {
-      const blob = await res.blob();
+      const freshBytes = new Uint8Array(await res.arrayBuffer());
+      if (freshBytes.byteLength > 0) bufferedParts.push(freshBytes);
+      const blobPartsFallback: BlobPart[] = bufferedParts.map(
+        (part) => part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength) as ArrayBuffer
+      );
+      const blob = new Blob(blobPartsFallback, { type: contentType });
       const blobUrl = URL.createObjectURL(blob);
       completedBlobUrls.set(downloadId, blobUrl);
       partialTransfers.delete(downloadId);
@@ -796,18 +930,21 @@ export async function startTransfer(
 
     const reader = res.body.getReader();
     const parts: Uint8Array[] = bufferedParts;
-    for (const carried of carriedParts) parts.push(carried);
     let received = 0;
     if (resumeOffset > 0) reportSpeed(resumeOffset, declaredTotal, true);
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        parts.push(value);
-        received += value.byteLength;
-        reportSpeed(resumeOffset + received, declaredTotal);
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          parts.push(value);
+          received += value.byteLength;
+          reportSpeed(resumeOffset + received, declaredTotal);
+        }
       }
+    } finally {
+      reader.cancel().catch(() => {});
     }
 
     const blobParts: BlobPart[] = parts.map(
@@ -820,8 +957,8 @@ export async function startTransfer(
     partialTransfers.delete(downloadId);
     callbacks.onComplete(blobUrl, blob.size, contentType, null);
   } catch (err) {
-    if (state.reason === 'pause') {
-      if (!isHls && !isDash) {
+    if (state.reason === 'pause' || (err instanceof DOMException && err.name === 'AbortError' && state.reason !== 'cancel')) {
+      if (!isHls && !isDash && state.downloadedBytes > 0 && bufferedParts.length > 0) {
         // Keep what we already streamed so the next press of Resume continues
         // exactly where this transfer stopped instead of corrupting the file.
         partialTransfers.set(downloadId, {
@@ -834,8 +971,6 @@ export async function startTransfer(
     } else if (state.reason === 'cancel') {
       partialTransfers.delete(downloadId);
       callbacks.onCancelled(state.downloadedBytes);
-    } else if (err instanceof DOMException && err.name === 'AbortError') {
-      callbacks.onPaused(state.downloadedBytes);
     } else if (err instanceof UnsupportedMediaError) {
       partialTransfers.delete(downloadId);
       callbacks.onError(err.message);

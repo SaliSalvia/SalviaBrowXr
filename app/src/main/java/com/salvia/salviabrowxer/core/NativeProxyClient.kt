@@ -1329,7 +1329,8 @@ object NativeProxyClient {
         val mime = uri.getQueryParameter("mime")?.takeIf { it.isNotBlank() } ?: "video/mp4"
         val downloadsDir = File(context.filesDir, "downloads")
         val targetFile = File(downloadsDir, id)
-        if (!targetFile.canonicalPath.startsWith(downloadsDir.canonicalPath) || !targetFile.exists()) {
+        val canonicalDir = downloadsDir.canonicalPath.trimEnd(File.separatorChar) + File.separatorChar
+        if (!targetFile.canonicalPath.startsWith(canonicalDir) || !targetFile.exists()) {
             return jsonResponse(404, JSONObject().put("error", "Local file not found"))
         }
 
@@ -1387,20 +1388,38 @@ object NativeProxyClient {
             val scheme = parsed.scheme?.lowercase(Locale.US)
             if (scheme != "http" && scheme != "https") return null
             if (!parsed.userInfo.isNullOrEmpty()) return null
-            val host = parsed.host?.lowercase(Locale.US)?.trim('[', ']') ?: return null
-            if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" || host.endsWith(".local")) {
+            val host = parsed.host?.lowercase(Locale.US)?.trim('[', ']')?.trimEnd('.') ?: return null
+            if (host.isEmpty()) return null
+            if (host == "localhost" ||
+                host == "127.0.0.1" ||
+                host == "::1" ||
+                host == "::" ||
+                host == "0.0.0.0" ||
+                host.endsWith(".local") ||
+                host.endsWith(".localhost") ||
+                host.endsWith(".internal")
+            ) {
                 return null
             }
-            if (host.startsWith("10.") || host.startsWith("192.168.") || host.startsWith("169.254.")) {
+            if (host.all { it.isDigit() }) return null
+            if (host.startsWith("10.") || host.startsWith("127.") || host.startsWith("192.168.") || host.startsWith("169.254.") || host.startsWith("0.")) {
                 return null
             }
             if (host.startsWith("172.")) {
                 val second = host.split(".").getOrNull(1)?.toIntOrNull()
                 if (second != null && second in 16..31) return null
             }
+            if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:") || host.startsWith("::ffff:")) {
+                return null
+            }
             try {
                 val addr = InetAddress.getByName(host)
-                if (addr.isLoopbackAddress || addr.isSiteLocalAddress || addr.isLinkLocalAddress) {
+                if (addr.isLoopbackAddress ||
+                    addr.isSiteLocalAddress ||
+                    addr.isLinkLocalAddress ||
+                    addr.isAnyLocalAddress ||
+                    addr.isMulticastAddress
+                ) {
                     return null
                 }
             } catch (_: Exception) {

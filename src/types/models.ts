@@ -133,6 +133,16 @@ export type ThemeMode = 'system' | 'dark' | 'light';
 
 export type BatterySaverMode = 'off' | 'auto' | 'on';
 
+export type OmniboxPosition = 'top' | 'bottom';
+
+export interface SpeedDialPin {
+  id: string;
+  title: string;
+  url: string;
+  accent: string;
+  isBuiltIn?: boolean;
+}
+
 export interface BrowserExtension {
   id: string;
   name: string;
@@ -152,6 +162,8 @@ export interface BrowserExtension {
 export interface AppSettings {
   searchEngine: SearchEngineKey;
   homepage: string;
+  omniboxPosition: OmniboxPosition;
+  speedDialPins: SpeedDialPin[];
   isJavaScriptEnabled: boolean;
   areCookiesEnabled: boolean;
   isDesktopSite: boolean;

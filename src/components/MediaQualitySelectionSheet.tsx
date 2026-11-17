@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Check, CircleDot, Download, Film, Square, X } from 'lucide-react';
+import { effectiveParallelConnections } from '../core/batteryPolicy';
 import { formatBitrateKbps, formatDurationSeconds, formatFileSize, sanitizeFilename } from '../core/mediaResolver';
 import { useApp } from '../store/AppContext';
 import type { MediaFormat } from '../types/models';
@@ -12,6 +13,8 @@ export const MediaQualitySelectionSheet: React.FC = () => {
     recording,
     startRecordingPlayback,
     stopRecordingPlayback,
+    settings,
+    isBatterySaverActive,
     t,
   } = useApp();
 
@@ -55,6 +58,10 @@ export const MediaQualitySelectionSheet: React.FC = () => {
   );
   const formats: MediaFormat[] = [...videoFormats, ...audioFormats];
   const selectedFormat = formats.find((f) => f.id === selectedId) || formats[0] || null;
+  const effectiveConns = effectiveParallelConnections(
+    settings.parallelConnections,
+    isBatterySaverActive
+  );
 
   const unsupportedText = (() => {
     if (unsupported === 'DASH') return t('error_dash_unsupported');
@@ -107,10 +114,11 @@ export const MediaQualitySelectionSheet: React.FC = () => {
               <h2 className="font-display truncate text-[16px] font-bold text-[var(--salvia-text)]">
                 {mediaInfo.title || t('media_fallback_title')}
               </h2>
-              <p className="font-data mt-0.5 text-[12px] text-[var(--salvia-text-muted)]">
+              <p className="font-data tabular-nums mt-0.5 text-[12px] text-[var(--salvia-text-muted)]">
                 {[
                   mediaInfo.duration ? formatDurationSeconds(mediaInfo.duration / 1000) : null,
                   isResolving ? t('quality_checking') : t('quality_options', { count: formats.length }),
+                  effectiveConns > 1 ? t('media_turbo_threads', { count: effectiveConns }) : null,
                 ]
                   .filter(Boolean)
                   .join(' · ')}

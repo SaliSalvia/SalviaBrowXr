@@ -58,6 +58,7 @@ export const MediaPlayerScreen: React.FC = () => {
       ),
     [downloads, isLockedFolderUnlocked]
   );
+  const [retryNonce, setRetryNonce] = useState(0);
 
   const activeUrl = playerTarget?.url || '';
   const activeTitle = playerTarget?.title || t('media_fallback_title');
@@ -124,7 +125,7 @@ export const MediaPlayerScreen: React.FC = () => {
         video.load();
       }
     };
-  }, [activeUrl, playerTarget?.isHls, t]);
+  }, [activeUrl, playerTarget?.isHls, retryNonce, t]);
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed;
@@ -294,7 +295,7 @@ export const MediaPlayerScreen: React.FC = () => {
                       type="button"
                       onClick={() => {
                         setLoadError(null);
-                        videoRef.current?.load();
+                        setRetryNonce((n) => n + 1);
                       }}
                       className="min-h-10 rounded-xl bg-[var(--salvia-iris)] px-4 text-[13px] font-semibold text-white"
                     >
@@ -334,7 +335,7 @@ export const MediaPlayerScreen: React.FC = () => {
                 max={duration || 100}
                 step={0.5}
                 value={Math.min(currentTime, duration || 100)}
-                aria-label={t('player_speed')}
+                aria-label={t('player_seek')}
                 onChange={(e) => {
                   const val = Number(e.target.value);
                   if (videoRef.current) videoRef.current.currentTime = val;

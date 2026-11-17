@@ -26,8 +26,9 @@ import {
   SEARCH_ENGINE_OPTIONS,
   SOURCE_CODE_URL,
 } from '../core/constants';
+import { MIN_PASSWORD_CHARS } from '../core/security';
 import { useApp } from '../store/AppContext';
-import type { BatterySaverMode, LanguageMode, SearchEngineKey, ThemeMode } from '../types/models';
+import type { BatterySaverMode, LanguageMode, OmniboxPosition, SearchEngineKey, ThemeMode } from '../types/models';
 
 const ToggleRow: React.FC<{
   title: string;
@@ -103,8 +104,8 @@ export const SettingsScreen: React.FC = () => {
 
   const handleSavePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pw1.length < 4) {
-      setPwError(t('locked_folder_password_short', { min: 4 }));
+    if (pw1.length < MIN_PASSWORD_CHARS) {
+      setPwError(t('locked_folder_password_short', { min: MIN_PASSWORD_CHARS }));
       return;
     }
     if (pw1 !== pw2) {
@@ -117,6 +118,8 @@ export const SettingsScreen: React.FC = () => {
       setPw2('');
       setPwError(null);
       setPasswordModalOpen(false);
+    } else {
+      setPwError(t('locked_folder_password_short', { min: MIN_PASSWORD_CHARS }));
     }
   };
 
@@ -206,6 +209,40 @@ export const SettingsScreen: React.FC = () => {
               checked={settings.areCookiesEnabled}
               onChange={(v) => updateSettings({ areCookiesEnabled: v })}
             />
+
+            {/* Omnibox Position Picker */}
+            <div className="flex flex-col gap-2.5 border-b border-[var(--salvia-border)]/50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-[14px] font-semibold text-[var(--salvia-text)]">
+                  {t('omnibox_position')}
+                </p>
+                <p className="text-[12px] text-[var(--salvia-text-muted)]">
+                  {settings.omniboxPosition === 'bottom' ? t('omnibox_bottom') : t('omnibox_top')}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(
+                  [
+                    { id: 'top', label: t('omnibox_top') },
+                    { id: 'bottom', label: t('omnibox_bottom') },
+                  ] as Array<{ id: OmniboxPosition; label: string }>
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    data-testid={`omnibox-opt-${opt.id}`}
+                    onClick={() => updateSettings({ omniboxPosition: opt.id })}
+                    className={`min-h-10 rounded-xl px-3.5 text-[12px] font-semibold transition-colors ${
+                      settings.omniboxPosition === opt.id
+                        ? 'bg-[var(--salvia-iris)] text-white'
+                        : 'border border-[var(--salvia-border)] bg-[var(--salvia-deep-cosmic)] text-[var(--salvia-text-muted)] hover:text-[var(--salvia-text)]'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             {/* Language Picker */}
             <div className="flex flex-col gap-2.5 border-b border-[var(--salvia-border)]/50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">

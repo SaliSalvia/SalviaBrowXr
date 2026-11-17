@@ -4,34 +4,28 @@ import {
   ArrowRight,
   Bookmark,
   BookmarkCheck,
-  Check,
   ChevronDown,
   ChevronUp,
-  Copy,
   Download,
   Film,
   Home,
   Layers,
   Lock,
-  Monitor,
   MoreVertical,
   Play,
   Plus,
   Puzzle,
   RotateCw,
   Search,
-  Settings,
-  Share2,
-  ShieldCheck,
-  ShieldOff,
+  Sparkles,
   Unlock,
   X,
-  ZoomIn,
-  ZoomOut,
 } from 'lucide-react';
+import { BrowserMenuSheet } from '../components/BrowserMenuSheet';
 import { BrowserNavRail } from '../components/BrowserNavRail';
 import { FloatingDownloadButton } from '../components/FloatingDownloadButton';
 import { OrbitalBrandMark } from '../components/OrbitalBrandMark';
+import { SiteShieldPopover } from '../components/SiteShieldPopover';
 import { BUILTIN_SHOWCASE_PAGES } from '../core/constants';
 import { hostOfUrl } from '../core/adBlockRules';
 import { formatDurationSeconds, formatFileSize } from '../core/mediaResolver';
@@ -55,8 +49,6 @@ export const BrowserScreen: React.FC = () => {
     createTab,
     switchTab,
     closeTab,
-    duplicateTab,
-    closeOtherTabs,
     navigateCurrentTab,
     reloadCurrentTab,
     stopLoadingCurrentTab,
@@ -66,8 +58,6 @@ export const BrowserScreen: React.FC = () => {
     blockedCleartextUrl,
     allowCleartextAndRetry,
     dismissCleartextBlock,
-    isAdBlockOffForCurrentSite,
-    toggleAdBlockForCurrentSite,
     isCurrentTabBookmarked,
     toggleBookmarkForCurrentTab,
     bookmarks,
@@ -80,8 +70,6 @@ export const BrowserScreen: React.FC = () => {
     openQualitySheetForCandidate,
     downloadMainMedia,
     currentMainCandidate,
-    activeDownloadsCount,
-    completedDownloadsCount,
     findInPage,
     openFindInPage,
     closeFindInPage,
@@ -90,9 +78,9 @@ export const BrowserScreen: React.FC = () => {
     isNativeBrowserEngine,
     nativeNavCaps,
     pageZoom,
-    setPageZoom,
     reportDetectedMediaFromBridge,
     reportVisibleMediaFromBridge,
+    rescanCurrentTabMedia,
     showToast,
   } = useApp();
 
@@ -104,6 +92,7 @@ export const BrowserScreen: React.FC = () => {
   const [addressInput, setAddressInput] = useState(currentTab.url || '');
   const [addressFocused, setAddressFocused] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [shieldOpen, setShieldOpen] = useState(false);
 
   const iframeDocGenRef = useRef(0);
   const lastAppliedExtKeyRef = useRef('');
@@ -235,7 +224,8 @@ export const BrowserScreen: React.FC = () => {
     : null;
 
   const suggestions = addressFocused ? getAddressSuggestions(addressInput) : [];
-  const isHttps = (currentTab.url || '').startsWith('https://');
+  const isShowcaseUrl = (currentTab.url || '').startsWith('https://salvia.showcase/');
+  const isHttps = !isShowcaseUrl && (currentTab.url || '').startsWith('https://');
   const isHttp = (currentTab.url || '').startsWith('http://');
   const canGoBack =
     currentTab.historyIndex > 0 || Boolean(nativeNavCaps[currentTab.id]?.canGoBack);
@@ -250,6 +240,7 @@ export const BrowserScreen: React.FC = () => {
     !page?.error;
   const hasCoveringOverlay =
     menuOpen ||
+    shieldOpen ||
     (addressFocused && suggestions.length > 0) ||
     isMediaTrayVisible ||
     qualitySheet !== null ||
@@ -356,6 +347,7 @@ export const BrowserScreen: React.FC = () => {
 
   const BackIcon = isRtl ? ArrowRight : ArrowLeft;
   const ForwardIcon = isRtl ? ArrowLeft : ArrowRight;
+  const isBottomOmnibox = settings.omniboxPosition === 'bottom';
 
   const submitAddress = (e: React.FormEvent) => {
     e.preventDefault();
@@ -384,6 +376,338 @@ export const BrowserScreen: React.FC = () => {
     await navigator.clipboard?.writeText(currentTab.url);
     showToast(t('link_copied'));
   };
+
+  const renderOmniboxRow = () => (
+    <div className="flex h-12 items-center gap-1 px-2 sm:h-14 sm:gap-1.5 sm:px-3">
+      <button
+        type="button"
+        onClick={goBackCurrentTab}
+        disabled={!canGoBack}
+        aria-label={t('go_back')}
+        className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text)] disabled:opacity-30 hover:bg-[var(--salvia-elevated)] sm:flex"
+      >
+        <BackIcon className="h-4 w-4" />
+      </button>
+
+      <button
+        type="button"
+        onClick={goForwardCurrentTab}
+        disabled={!canGoForward}
+        aria-label={t('go_forward')}
+        className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text)] disabled:opacity-30 hover:bg-[var(--salvia-elevated)] sm:flex"
+      >
+        <ForwardIcon className="h-4 w-4" />
+      </button>
+
+      <button
+        type="button"
+        onClick={page?.isLoading ? stopLoadingCurrentTab : reloadCurrentTab}
+        aria-label={page?.isLoading ? t('stop') : t('reload')}
+        className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)] hover:text-[var(--salvia-text)] sm:flex"
+      >
+        {page?.isLoading ? <X className="h-4 w-4" /> : <RotateCw className="h-4 w-4" />}
+      </button>
+
+      {/* Address / Search Omnibox */}
+      <form onSubmit={submitAddress} className="relative flex min-w-0 flex-1 items-center">
+        <div
+          className={`flex h-11 w-full items-center gap-1 rounded-2xl border px-1.5 transition-colors duration-150 sm:h-10 sm:px-2 ${
+            currentTab.isPrivate
+              ? 'border-[var(--salvia-iris)]/55 bg-[var(--salvia-surface)] focus-within:border-[var(--salvia-iris)]'
+              : 'border-[var(--salvia-border)] bg-[var(--salvia-surface)] focus-within:border-[var(--salvia-cyan)]'
+          }`}
+        >
+          {/* Clickable Site Shield & Security Indicator */}
+          <button
+            type="button"
+            data-testid="site-shield-trigger"
+            onClick={() => setShieldOpen((prev) => !prev)}
+            aria-label={t('site_shield_title')}
+            title={
+              isHttps
+                ? t('connection_secure')
+                : isHttp
+                  ? t('connection_not_secure')
+                  : t('site_shield_title')
+            }
+            className={`flex h-11 min-w-10 shrink-0 items-center justify-center rounded-xl transition-colors sm:h-8 sm:min-w-8 ${
+              isHttps
+                ? 'text-[var(--salvia-cyan)] hover:bg-[var(--salvia-elevated)]'
+                : isHttp
+                  ? 'text-[var(--salvia-gold)] hover:bg-[var(--salvia-elevated)]'
+                  : isShowcaseUrl
+                    ? 'text-[var(--salvia-iris-light)] hover:bg-[var(--salvia-elevated)]'
+                    : 'text-[var(--salvia-text-subtle)] hover:bg-[var(--salvia-elevated)]'
+            }`}
+          >
+            {isHttps ? (
+              <Lock className="h-3.5 w-3.5" />
+            ) : isHttp ? (
+              <Unlock className="h-3.5 w-3.5" />
+            ) : isShowcaseUrl ? (
+              <Sparkles className="h-3.5 w-3.5" />
+            ) : (
+              <Search className="h-3.5 w-3.5" />
+            )}
+          </button>
+
+          <input
+            ref={addressInputRef}
+            type="text"
+            value={addressInput}
+            onFocus={() => setAddressFocused(true)}
+            onBlur={() => window.setTimeout(() => setAddressFocused(false), 160)}
+            onChange={(e) => setAddressInput(e.target.value)}
+            placeholder={t('search_or_type_url')}
+            dir="ltr"
+            aria-label={t('search_or_type_url')}
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-[var(--salvia-text)] placeholder-[var(--salvia-text-subtle)] outline-none sm:text-[14px]"
+          />
+
+          {addressInput ? (
+            <button
+              type="button"
+              onClick={() => setAddressInput('')}
+              aria-label={t('address_clear')}
+              className="flex h-11 w-10 shrink-0 items-center justify-center rounded-lg text-[var(--salvia-text-subtle)] hover:text-[var(--salvia-text)] sm:h-8 sm:w-8"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+
+          {currentTab.url ? (
+            <button
+              type="button"
+              onClick={toggleBookmarkForCurrentTab}
+              aria-label={isCurrentTabBookmarked ? t('bookmark_remove') : t('bookmark_add')}
+              title={isCurrentTabBookmarked ? t('bookmark_remove') : t('bookmark_add')}
+              className={`flex h-11 w-10 shrink-0 items-center justify-center rounded-lg transition-colors sm:h-8 sm:w-8 ${
+                isCurrentTabBookmarked
+                  ? 'text-[var(--salvia-gold)]'
+                  : 'text-[var(--salvia-text-subtle)] hover:text-[var(--salvia-gold)]'
+              }`}
+            >
+              {isCurrentTabBookmarked ? (
+                <BookmarkCheck className="h-4 w-4 fill-current" />
+              ) : (
+                <Bookmark className="h-4 w-4" />
+              )}
+            </button>
+          ) : null}
+        </div>
+
+        {suggestions.length > 0 ? (
+          <div
+            className={`absolute right-0 left-0 z-40 overflow-hidden rounded-2xl border border-[var(--salvia-border)] bg-[var(--salvia-surface)] shadow-2xl ${
+              isBottomOmnibox ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
+            }`}
+          >
+            {suggestions.map((sug) => (
+              <button
+                key={sug.url}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setAddressInput(sug.url);
+                  setAddressFocused(false);
+                  navigateCurrentTab(sug.url);
+                }}
+                className="flex min-h-11 w-full items-center justify-between gap-3 border-b border-[var(--salvia-border)]/40 px-4 py-2.5 text-start last:border-none hover:bg-[var(--salvia-elevated)]"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-medium text-[var(--salvia-text)]">
+                    {sug.title}
+                  </p>
+                  <p className="font-data truncate text-[11px] text-[var(--salvia-text-subtle)]">
+                    {sug.url}
+                  </p>
+                </div>
+                <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-[var(--salvia-cyan-text)]">
+                  {sug.source}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </form>
+
+      {/* Detected Media Tray Quick Trigger */}
+      {currentTabCandidates.length > 0 ? (
+        <button
+          type="button"
+          onClick={openMediaTray}
+          aria-label={`${t('media_tray_title')} (${currentTabCandidates.length})`}
+          title={t('media_detected', { count: currentTabCandidates.length })}
+          className="font-data tabular-nums flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#8F6BFF]/20 to-[#4CC4FF]/20 px-2.5 text-[12px] font-bold text-[var(--salvia-cyan-text)] ring-1 ring-[var(--salvia-cyan)]/50 hover:ring-[var(--salvia-cyan)] sm:h-10 sm:px-3"
+        >
+          <Film className="h-4 w-4 text-[var(--salvia-cyan)]" />
+          <span>{currentTabCandidates.length}</span>
+        </button>
+      ) : null}
+
+      {/* Extensions Quick Button (desktop) */}
+      <button
+        type="button"
+        onClick={() => navigate('extensions')}
+        title={t('extensions')}
+        aria-label={t('extensions')}
+        className="relative hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)] hover:text-[var(--salvia-iris)] md:flex"
+      >
+        <Puzzle className="h-4 w-4" />
+        {enabledExtensionCount > 0 ? (
+          <span className="font-data absolute top-1.5 end-1.5 h-2 w-2 rounded-full bg-[var(--salvia-cyan)]" />
+        ) : null}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => navigateCurrentTab(addressInput)}
+        aria-label={t('address_go')}
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-[#8F6BFF] to-[#5A34D9] text-white hover:opacity-95 sm:h-10 sm:w-10"
+      >
+        <ForwardIcon className="h-4 w-4" />
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setMenuOpen((prev) => !prev)}
+        aria-label={t('menu')}
+        className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)] hover:text-[var(--salvia-text)] md:flex"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+    </div>
+  );
+
+  const renderProgressAndBanners = () => (
+    <>
+      {page?.isLoading ? (
+        <div className="h-[2px] w-full overflow-hidden bg-[var(--salvia-elevated)]">
+          <div
+            className="h-full bg-gradient-to-r from-[#8F6BFF] via-[#4CC4FF] to-[#D9AE54] transition-all duration-300"
+            style={{ width: `${page.progress}%` }}
+          />
+        </div>
+      ) : null}
+
+      {findInPage ? (
+        <div className="flex items-center gap-2 border-t border-[var(--salvia-border)]/60 bg-[var(--salvia-surface)] px-3 py-2">
+          <input
+            type="text"
+            value={findInPage.query}
+            onChange={(e) => sendFindToIframe(e.target.value, false)}
+            placeholder={t('find_in_page_hint')}
+            autoFocus
+            className="h-10 min-w-0 flex-1 rounded-xl border border-[var(--salvia-border)] bg-[var(--salvia-deep-cosmic)] px-3 text-[13px] text-[var(--salvia-text)] outline-none focus:border-[var(--salvia-iris)]"
+          />
+          <span className="font-data tabular-nums text-[12px] text-[var(--salvia-text-muted)]">
+            {findInPage.matches > 0
+              ? `${findInPage.activeMatch}/${findInPage.matches}`
+              : t('find_no_matches')}
+          </span>
+          <button
+            type="button"
+            onClick={() => sendFindToIframe(findInPage.query, true)}
+            aria-label={t('find_previous')}
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)]"
+          >
+            <ChevronUp className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => sendFindToIframe(findInPage.query, false)}
+            aria-label={t('find_next')}
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)]"
+          >
+            <ChevronDown className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={closeFindInPage}
+            aria-label={t('find_close')}
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : null}
+
+      {blockedCleartextUrl ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--salvia-gold)]/45 bg-[var(--salvia-elevated)] px-4 py-2.5 text-[13px]">
+          <p className="text-[var(--salvia-text)]">{t('error_cleartext_blocked')}</p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={allowCleartextAndRetry}
+              className="min-h-10 rounded-xl bg-[#D9AE54] px-3 text-[12px] font-bold text-[#000000]"
+            >
+              {t('action_allow')}
+            </button>
+            <button
+              type="button"
+              onClick={dismissCleartextBlock}
+              className="min-h-10 rounded-xl px-2.5 text-[12px] font-semibold text-[var(--salvia-text-muted)] hover:text-[var(--salvia-text)]"
+            >
+              {t('action_dismiss')}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+
+  const renderMobileThumbNavRow = () => (
+    <div className="flex h-12 items-center justify-around px-2 md:hidden">
+      <button
+        type="button"
+        onClick={goBackCurrentTab}
+        disabled={!canGoBack}
+        aria-label={t('go_back')}
+        className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--salvia-text)] disabled:opacity-30"
+      >
+        <BackIcon className="h-5 w-5" />
+      </button>
+
+      <button
+        type="button"
+        onClick={page?.isLoading ? stopLoadingCurrentTab : reloadCurrentTab}
+        aria-label={page?.isLoading ? t('stop') : t('reload')}
+        className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--salvia-text-muted)]"
+      >
+        {page?.isLoading ? <X className="h-5 w-5" /> : <RotateCw className="h-5 w-5" />}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => navigate('home')}
+        onDoubleClick={goHomeInCurrentTab}
+        aria-label={t('home')}
+        className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-[#8F6BFF] to-[#4CC4FF] text-white shadow-[0_4px_14px_rgba(143,107,255,0.4)]"
+      >
+        <Home className="h-5 w-5" />
+      </button>
+
+      <button
+        type="button"
+        onClick={openTabSwitcher}
+        aria-label={t('tabs')}
+        className="flex h-11 min-w-11 items-center justify-center rounded-xl px-2 text-[var(--salvia-text)]"
+      >
+        <span className="font-data tabular-nums flex h-6 min-w-6 items-center justify-center rounded-md border-2 border-[var(--salvia-text-muted)] px-1 text-[12px] font-bold">
+          {tabs.length}
+        </span>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setMenuOpen((prev) => !prev)}
+        aria-label={t('menu')}
+        className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--salvia-text-muted)]"
+      >
+        <MoreVertical className="h-5 w-5" />
+      </button>
+    </div>
+  );
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--salvia-bg)] text-[var(--salvia-text)]">
@@ -465,294 +789,23 @@ export const BrowserScreen: React.FC = () => {
             onClick={openTabSwitcher}
             title={t('tab_overview')}
             aria-label={t('tab_overview')}
-            className="font-data flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-[var(--salvia-border)] bg-[var(--salvia-surface)] px-2.5 text-[11px] font-semibold text-[var(--salvia-text-muted)] hover:border-[var(--salvia-iris)] hover:text-[var(--salvia-text)]"
+            className="font-data tabular-nums flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-[var(--salvia-border)] bg-[var(--salvia-surface)] px-2.5 text-[11px] font-semibold text-[var(--salvia-text-muted)] hover:border-[var(--salvia-iris)] hover:text-[var(--salvia-text)]"
           >
             <Layers className="h-3.5 w-3.5 text-[var(--salvia-cyan)]" />
             <span>{tabs.length}</span>
           </button>
         </div>
 
-        {/* Browser Top Omnibox Bar */}
-        <header className="relative z-30 border-b border-[var(--salvia-border)]/70 bg-[var(--salvia-deep-cosmic)]">
-          <div className="flex h-14 items-center gap-1 px-2 sm:gap-1.5 sm:px-3">
-            <button
-              type="button"
-              onClick={goBackCurrentTab}
-              disabled={!canGoBack}
-              aria-label={t('go_back')}
-              className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text)] disabled:opacity-30 hover:bg-[var(--salvia-elevated)] sm:flex"
-            >
-              <BackIcon className="h-4 w-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={goForwardCurrentTab}
-              disabled={!canGoForward}
-              aria-label={t('go_forward')}
-              className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text)] disabled:opacity-30 hover:bg-[var(--salvia-elevated)] sm:flex"
-            >
-              <ForwardIcon className="h-4 w-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={page?.isLoading ? stopLoadingCurrentTab : reloadCurrentTab}
-              aria-label={page?.isLoading ? t('stop') : t('reload')}
-              className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)] hover:text-[var(--salvia-text)] sm:flex"
-            >
-              {page?.isLoading ? <X className="h-4 w-4" /> : <RotateCw className="h-4 w-4" />}
-            </button>
-
-            {/* Address / Search Omnibox */}
-            <form onSubmit={submitAddress} className="relative flex min-w-0 flex-1 items-center">
-              <div
-                className={`flex h-10 w-full items-center gap-2 rounded-2xl border px-3 transition-colors duration-150 ${
-                  currentTab.isPrivate
-                    ? 'border-[var(--salvia-iris)]/50 bg-[var(--salvia-surface)] focus-within:border-[var(--salvia-iris)]'
-                    : 'border-[var(--salvia-border)] bg-[var(--salvia-surface)] focus-within:border-[var(--salvia-cyan)]'
-                }`}
-              >
-                {isHttps ? (
-                  <span title={t('connection_secure')} className="shrink-0 text-[var(--salvia-cyan)]">
-                    <Lock className="h-3.5 w-3.5" />
-                  </span>
-                ) : isHttp ? (
-                  <span title={t('connection_not_secure')} className="shrink-0 text-[var(--salvia-gold)]">
-                    <Unlock className="h-3.5 w-3.5" />
-                  </span>
-                ) : (
-                  <Search className="h-3.5 w-3.5 shrink-0 text-[var(--salvia-text-subtle)]" />
-                )}
-
-                <input
-                  ref={addressInputRef}
-                  type="text"
-                  value={addressInput}
-                  onFocus={() => setAddressFocused(true)}
-                  onBlur={() => window.setTimeout(() => setAddressFocused(false), 160)}
-                  onChange={(e) => setAddressInput(e.target.value)}
-                  placeholder={t('search_or_type_url')}
-                  dir="ltr"
-                  aria-label={t('search_or_type_url')}
-                  className="min-w-0 flex-1 bg-transparent text-[13px] text-[var(--salvia-text)] placeholder-[var(--salvia-text-subtle)] outline-none sm:text-[14px]"
-                />
-
-                {addressInput ? (
-                  <button
-                    type="button"
-                    onClick={() => setAddressInput('')}
-                    aria-label={t('address_clear')}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--salvia-text-subtle)] hover:text-[var(--salvia-text)]"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                ) : null}
-
-                {currentTab.url ? (
-                  <button
-                    type="button"
-                    onClick={toggleBookmarkForCurrentTab}
-                    aria-label={isCurrentTabBookmarked ? t('bookmark_remove') : t('bookmark_add')}
-                    title={isCurrentTabBookmarked ? t('bookmark_remove') : t('bookmark_add')}
-                    className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
-                      isCurrentTabBookmarked
-                        ? 'text-[var(--salvia-gold)]'
-                        : 'text-[var(--salvia-text-subtle)] hover:text-[var(--salvia-gold)]'
-                    }`}
-                  >
-                    {isCurrentTabBookmarked ? (
-                      <BookmarkCheck className="h-4 w-4 fill-current" />
-                    ) : (
-                      <Bookmark className="h-4 w-4" />
-                    )}
-                  </button>
-                ) : null}
-              </div>
-
-              {suggestions.length > 0 ? (
-                <div className="absolute top-12 right-0 left-0 z-40 overflow-hidden rounded-2xl border border-[var(--salvia-border)] bg-[var(--salvia-surface)] shadow-2xl">
-                  {suggestions.map((sug) => (
-                    <button
-                      key={sug.url}
-                      type="button"
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        setAddressInput(sug.url);
-                        setAddressFocused(false);
-                        navigateCurrentTab(sug.url);
-                      }}
-                      className="flex w-full items-center justify-between gap-3 border-b border-[var(--salvia-border)]/40 px-4 py-2.5 text-start last:border-none hover:bg-[var(--salvia-elevated)]"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-[13px] font-medium text-[var(--salvia-text)]">
-                          {sug.title}
-                        </p>
-                        <p className="font-data truncate text-[11px] text-[var(--salvia-text-subtle)]">
-                          {sug.url}
-                        </p>
-                      </div>
-                      <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-[var(--salvia-cyan-text)]">
-                        {sug.source}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </form>
-
-            {/* Detected Media Tray Quick Trigger */}
-            {currentTabCandidates.length > 0 ? (
-              <button
-                type="button"
-                onClick={openMediaTray}
-                aria-label={`${t('media_tray_title')} (${currentTabCandidates.length})`}
-                title={t('media_detected', { count: currentTabCandidates.length })}
-                className="font-data flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#8F6BFF]/20 to-[#4CC4FF]/20 px-3 text-[12px] font-bold text-[var(--salvia-cyan-text)] ring-1 ring-[var(--salvia-cyan)]/50 hover:ring-[var(--salvia-cyan)]"
-              >
-                <Film className="h-4 w-4 text-[var(--salvia-cyan)]" />
-                <span>{currentTabCandidates.length}</span>
-              </button>
-            ) : null}
-
-            {/* Ad Block Shield Quick Toggle (desktop) */}
-            {currentTab.url && settings.isAdBlockEnabled ? (
-              <button
-                type="button"
-                onClick={toggleAdBlockForCurrentSite}
-                aria-label={
-                  isAdBlockOffForCurrentSite()
-                    ? t('ad_block_enable_here')
-                    : t('ad_block_disable_here')
-                }
-                title={
-                  isAdBlockOffForCurrentSite()
-                    ? t('ad_block_enable_here')
-                    : t('ad_block_disable_here')
-                }
-                className={`hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl md:flex ${
-                  isAdBlockOffForCurrentSite()
-                    ? 'text-[var(--salvia-pink-text)] hover:bg-[var(--salvia-elevated)]'
-                    : 'text-[var(--salvia-cyan)] hover:bg-[var(--salvia-elevated)]'
-                }`}
-              >
-                {isAdBlockOffForCurrentSite() ? (
-                  <ShieldOff className="h-4 w-4" />
-                ) : (
-                  <ShieldCheck className="h-4 w-4" />
-                )}
-              </button>
-            ) : null}
-
-            {/* Extensions Quick Button (desktop) */}
-            <button
-              type="button"
-              onClick={() => navigate('extensions')}
-              title={t('extensions')}
-              aria-label={t('extensions')}
-              className="relative hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)] hover:text-[var(--salvia-iris)] md:flex"
-            >
-              <Puzzle className="h-4 w-4" />
-              {enabledExtensionCount > 0 ? (
-                <span className="font-data absolute top-1.5 end-1.5 h-2 w-2 rounded-full bg-[var(--salvia-cyan)]" />
-              ) : null}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => navigateCurrentTab(addressInput)}
-              aria-label={t('address_go')}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-[#8F6BFF] to-[#5A34D9] text-white hover:opacity-95"
-            >
-              <ForwardIcon className="h-4 w-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setMenuOpen((prev) => !prev)}
-              aria-label={t('menu')}
-              className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)] hover:text-[var(--salvia-text)] md:flex"
-            >
-              <MoreVertical className="h-4 w-4" />
-            </button>
-          </div>
-
-          {/* Loading progress strip */}
-          {page?.isLoading ? (
-            <div className="h-[2px] w-full overflow-hidden bg-[var(--salvia-elevated)]">
-              <div
-                className="h-full bg-gradient-to-r from-[#8F6BFF] via-[#4CC4FF] to-[#D9AE54] transition-all duration-300"
-                style={{ width: `${page.progress}%` }}
-              />
-            </div>
-          ) : null}
-
-          {/* Find in page bar */}
-          {findInPage ? (
-            <div className="flex items-center gap-2 border-t border-[var(--salvia-border)]/60 bg-[var(--salvia-surface)] px-3 py-2">
-              <input
-                type="text"
-                value={findInPage.query}
-                onChange={(e) => sendFindToIframe(e.target.value, false)}
-                placeholder={t('find_in_page_hint')}
-                autoFocus
-                className="h-9 min-w-0 flex-1 rounded-xl border border-[var(--salvia-border)] bg-[var(--salvia-deep-cosmic)] px-3 text-[13px] text-[var(--salvia-text)] outline-none focus:border-[var(--salvia-iris)]"
-              />
-              <span className="font-data text-[12px] text-[var(--salvia-text-muted)]">
-                {findInPage.matches > 0
-                  ? `${findInPage.activeMatch}/${findInPage.matches}`
-                  : t('find_no_matches')}
-              </span>
-              <button
-                type="button"
-                onClick={() => sendFindToIframe(findInPage.query, true)}
-                aria-label={t('find_previous')}
-                className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)]"
-              >
-                <ChevronUp className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => sendFindToIframe(findInPage.query, false)}
-                aria-label={t('find_next')}
-                className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)]"
-              >
-                <ChevronDown className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={closeFindInPage}
-                aria-label={t('find_close')}
-                className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)]"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          ) : null}
-
-          {/* Cleartext http:// warning bar */}
-          {blockedCleartextUrl ? (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--salvia-gold)]/45 bg-[var(--salvia-elevated)] px-4 py-2.5 text-[13px]">
-              <p className="text-[var(--salvia-text)]">{t('error_cleartext_blocked')}</p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={allowCleartextAndRetry}
-                  className="min-h-9 rounded-xl bg-[#D9AE54] px-3 text-[12px] font-bold text-[#000000]"
-                >
-                  {t('action_allow')}
-                </button>
-                <button
-                  type="button"
-                  onClick={dismissCleartextBlock}
-                  className="min-h-9 rounded-xl px-2.5 text-[12px] font-semibold text-[var(--salvia-text-muted)] hover:text-[var(--salvia-text)]"
-                >
-                  {t('action_dismiss')}
-                </button>
-              </div>
-            </div>
-          ) : null}
-        </header>
+        {/* Top Omnibox Header (when omniboxPosition === 'top') */}
+        {!isBottomOmnibox ? (
+          <header
+            data-testid="browser-top-chrome"
+            className="relative z-30 border-b border-[var(--salvia-border)]/70 bg-[var(--salvia-deep-cosmic)]"
+          >
+            {renderOmniboxRow()}
+            {renderProgressAndBanners()}
+          </header>
+        ) : null}
 
         {/* Browser Content Viewport */}
         <div ref={viewportRef} className="relative flex-1 overflow-y-auto bg-[var(--salvia-bg)]">
@@ -760,15 +813,7 @@ export const BrowserScreen: React.FC = () => {
             /* Empty New Tab Launch View */
             <div className="animate-salvia-fade-up mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center px-4 py-10 text-center sm:px-6">
               <div className="relative mb-5 flex items-center justify-center">
-                <div
-                  aria-hidden="true"
-                  className="pointer-events-none absolute h-40 w-40 rounded-full"
-                  style={{
-                    background:
-                      'radial-gradient(circle, rgba(143,107,255,0.22) 0%, rgba(76,196,255,0.12) 55%, rgba(0,0,0,0) 76%)',
-                  }}
-                />
-                <OrbitalBrandMark size={96} showRing={false} />
+                <OrbitalBrandMark size={84} showRing={false} />
               </div>
 
               <h2 className="font-display text-[22px] font-bold text-[var(--salvia-text)]">
@@ -869,7 +914,7 @@ export const BrowserScreen: React.FC = () => {
                                   },
                                 })
                               }
-                              className="mt-1 inline-flex min-h-10 items-center gap-1.5 rounded-xl bg-[#18122E] px-4 text-[12px] font-semibold text-[#F4F2FF] ring-1 ring-[#312556] hover:ring-[#4CC4FF]"
+                              className="mt-1 inline-flex min-h-11 items-center gap-1.5 rounded-xl bg-[#18122E] px-4 text-[12px] font-semibold text-[#F4F2FF] ring-1 ring-[#312556] hover:ring-[#4CC4FF]"
                             >
                               <Play className="h-3.5 w-3.5 fill-current" />
                               {t('download_open')}
@@ -945,286 +990,40 @@ export const BrowserScreen: React.FC = () => {
           {!nativeViewportVisible ? <FloatingDownloadButton containerRef={viewportRef} /> : null}
         </div>
 
-        {/* Mobile Thumb-Zone Bottom Dock (<= 56px tall) */}
-        <footer className="relative z-30 border-t border-[var(--salvia-border)]/70 bg-[var(--salvia-deep-cosmic)] md:hidden">
-          <div className="flex h-14 items-center justify-around px-2">
-            <button
-              type="button"
-              onClick={goBackCurrentTab}
-              disabled={!canGoBack}
-              aria-label={t('go_back')}
-              className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--salvia-text)] disabled:opacity-30"
-            >
-              <BackIcon className="h-5 w-5" />
-            </button>
-
-            <button
-              type="button"
-              onClick={page?.isLoading ? stopLoadingCurrentTab : reloadCurrentTab}
-              aria-label={page?.isLoading ? t('stop') : t('reload')}
-              className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--salvia-text-muted)]"
-            >
-              {page?.isLoading ? <X className="h-5 w-5" /> : <RotateCw className="h-5 w-5" />}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => navigate('home')}
-              onDoubleClick={goHomeInCurrentTab}
-              aria-label={t('home')}
-              className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-[#8F6BFF] to-[#4CC4FF] text-white shadow-[0_4px_14px_rgba(143,107,255,0.45)]"
-            >
-              <Home className="h-5 w-5" />
-            </button>
-
-            <button
-              type="button"
-              onClick={openTabSwitcher}
-              aria-label={t('tabs')}
-              className="flex h-11 min-w-11 items-center justify-center rounded-xl px-2 text-[var(--salvia-text)]"
-            >
-              <span className="font-data flex h-6 min-w-6 items-center justify-center rounded-md border-2 border-[var(--salvia-text-muted)] px-1 text-[12px] font-bold">
-                {tabs.length}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setMenuOpen((prev) => !prev)}
-              aria-label={t('menu')}
-              className="flex h-11 w-11 items-center justify-center rounded-xl text-[var(--salvia-text-muted)]"
-            >
-              <MoreVertical className="h-5 w-5" />
-            </button>
-          </div>
+        {/* Bottom Dock (Top mode: mobile 5-button dock; Bottom mode: unified omnibox + mobile nav) */}
+        <footer
+          data-testid="browser-bottom-chrome"
+          className={`relative z-30 border-t border-[var(--salvia-border)]/70 bg-[var(--salvia-deep-cosmic)] ${
+            isBottomOmnibox ? '' : 'md:hidden'
+          }`}
+        >
+          {isBottomOmnibox ? (
+            <>
+              {renderProgressAndBanners()}
+              {renderOmniboxRow()}
+            </>
+          ) : null}
+          {renderMobileThumbNavRow()}
         </footer>
       </div>
 
-      {/* Pro Overflow Menu Popover */}
-      {menuOpen ? (
-        <div className="fixed inset-0 z-50" onClick={() => setMenuOpen(false)}>
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="animate-salvia-menu-in absolute right-3 bottom-16 w-72 overflow-hidden rounded-2xl border border-[var(--salvia-border)] bg-[var(--salvia-surface)] py-1.5 shadow-2xl md:top-24 md:right-4 md:bottom-auto"
-          >
-            {/* Quick Zoom Controls */}
-            <div className="flex items-center justify-between border-b border-[var(--salvia-border)]/50 px-4 py-2">
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => setPageZoom(Math.max(75, pageZoom - 10))}
-                  aria-label={t('zoom_out')}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)] hover:text-[var(--salvia-text)]"
-                >
-                  <ZoomOut className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPageZoom(100)}
-                  aria-label={t('zoom_reset')}
-                  className="font-data min-h-9 rounded-lg px-2 text-[12px] font-semibold text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-                >
-                  {pageZoom}%
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPageZoom(Math.min(150, pageZoom + 10))}
-                  aria-label={t('zoom_in')}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--salvia-text-muted)] hover:bg-[var(--salvia-elevated)] hover:text-[var(--salvia-text)]"
-                >
-                  <ZoomIn className="h-4 w-4" />
-                </button>
-              </div>
+      {/* Site Shield & Per-Site Controls Popover */}
+      <SiteShieldPopover
+        isOpen={shieldOpen}
+        onClose={() => setShieldOpen(false)}
+        omniboxPosition={settings.omniboxPosition}
+      />
 
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    navigate('downloads', { downloadsTab: 0 });
-                  }}
-                  aria-label={t('download_active')}
-                  className="font-data flex h-9 items-center gap-1 rounded-lg bg-[var(--salvia-elevated)] px-2 text-[11px] font-bold text-[var(--salvia-iris-light)]"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  <span>{activeDownloadsCount}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    navigate('downloads', { downloadsTab: 2 });
-                  }}
-                  aria-label={t('download_completed')}
-                  className="font-data flex h-9 items-center gap-1 rounded-lg bg-[var(--salvia-elevated)] px-2 text-[11px] font-bold text-[var(--salvia-cyan-text)]"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  <span>{completedDownloadsCount}</span>
-                </button>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                createTab({ isPrivate: false });
-                setMenuOpen(false);
-              }}
-              className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <Plus className="h-4 w-4 text-[var(--salvia-cyan)]" />
-              <span>{t('new_tab')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                createTab({ isPrivate: true });
-                setMenuOpen(false);
-              }}
-              className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <Lock className="h-4 w-4 text-[var(--salvia-iris-light)]" />
-              <span>{t('new_private_tab')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                duplicateTab(currentTab.id);
-                setMenuOpen(false);
-              }}
-              className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <Copy className="h-4 w-4 text-[var(--salvia-text-muted)]" />
-              <span>{t('duplicate_tab')}</span>
-            </button>
-            {tabs.length > 1 ? (
-              <button
-                type="button"
-                onClick={() => {
-                  closeOtherTabs(currentTab.id);
-                  setMenuOpen(false);
-                }}
-                className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-              >
-                <X className="h-4 w-4 text-[var(--salvia-pink)]" />
-                <span>{t('close_other_tabs')}</span>
-              </button>
-            ) : null}
-
-            <div className="my-1 h-px bg-[var(--salvia-border)]/50" />
-
-            <button
-              type="button"
-              onClick={() => {
-                openMediaTray();
-                setMenuOpen(false);
-              }}
-              className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <Film className="h-4 w-4 text-[var(--salvia-cyan)]" />
-              <span>{t('media_tray_title')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                openFindInPage();
-                setMenuOpen(false);
-              }}
-              className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <Search className="h-4 w-4 text-[var(--salvia-text-muted)]" />
-              <span>{t('find_in_page')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                updateSettings({ isDesktopSite: !settings.isDesktopSite });
-                setMenuOpen(false);
-              }}
-              className="flex min-h-11 w-full items-center justify-between px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <span className="flex items-center gap-3">
-                <Monitor className="h-4 w-4 text-[var(--salvia-text-muted)]" />
-                <span>{t('desktop_site')}</span>
-              </span>
-              {settings.isDesktopSite ? <Check className="h-4 w-4 text-[var(--salvia-cyan)]" /> : null}
-            </button>
-
-            {currentTab.url ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleCopyUrl}
-                  className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-                >
-                  <Copy className="h-4 w-4 text-[var(--salvia-text-muted)]" />
-                  <span>{t('copy_link')}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSharePage}
-                  className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-                >
-                  <Share2 className="h-4 w-4 text-[var(--salvia-text-muted)]" />
-                  <span>{t('share_page')}</span>
-                </button>
-              </>
-            ) : null}
-
-            <div className="my-1 h-px bg-[var(--salvia-border)]/50" />
-
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                navigate('extensions');
-              }}
-              className="flex min-h-11 w-full items-center justify-between px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <span className="flex items-center gap-3">
-                <Puzzle className="h-4 w-4 text-[var(--salvia-iris)]" />
-                <span>{t('extensions')}</span>
-              </span>
-              <span className="font-data text-[11px] font-bold text-[var(--salvia-cyan-text)]">
-                {enabledExtensionCount}
-              </span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                navigate('downloads');
-              }}
-              className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <Download className="h-4 w-4 text-[var(--salvia-gold)]" />
-              <span>{t('downloads')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                navigate('bookmarks');
-              }}
-              className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <Bookmark className="h-4 w-4 text-[var(--salvia-gold)]" />
-              <span>{t('bookmarks')}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMenuOpen(false);
-                navigate('settings');
-              }}
-              className="flex min-h-11 w-full items-center gap-3 px-4 text-start text-[13px] text-[var(--salvia-text)] hover:bg-[var(--salvia-elevated)]"
-            >
-              <Settings className="h-4 w-4 text-[var(--salvia-text-muted)]" />
-              <span>{t('settings')}</span>
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {/* 4-Column Thumb-Zone Browser Menu Sheet */}
+      <BrowserMenuSheet
+        isOpen={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        onTriggerDeepScan={() => {
+          void rescanCurrentTabMedia(iframeRef.current);
+        }}
+        onCopyUrl={handleCopyUrl}
+        onSharePage={handleSharePage}
+      />
     </div>
   );
 };

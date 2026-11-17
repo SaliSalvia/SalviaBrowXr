@@ -1,4 +1,5 @@
 import type { AppSettings, SearchEngineKey } from '../types/models';
+import { DEFAULT_SPEED_DIAL_PINS } from './speedDial';
 
 export const APP_NAME = 'SalviaBrowxer';
 export const APP_VERSION = '1.0.0';
@@ -35,6 +36,8 @@ export const SEARCH_ENGINE_OPTIONS: SearchEngineKey[] = [
 export const DEFAULT_SETTINGS: AppSettings = {
   searchEngine: DEFAULT_SEARCH_ENGINE,
   homepage: DEFAULT_HOMEPAGE,
+  omniboxPosition: 'top',
+  speedDialPins: DEFAULT_SPEED_DIAL_PINS,
   isJavaScriptEnabled: true,
   areCookiesEnabled: true,
   isDesktopSite: false,

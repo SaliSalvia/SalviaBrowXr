@@ -4,6 +4,7 @@ import {
   isYouTubeUrl,
   type LinkPatternMatch,
 } from '../src/core/linkPatternEngine';
+import { classifyEmbeddedPlayerUrl } from '../src/core/mediaDetectorHeuristics';
 
 export const DEFAULT_USER_AGENT_MOBILE =
   'Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
@@ -935,7 +936,10 @@ export async function extractMediaWithPatterns(rawUrl: string): Promise<Extracti
   return task;
 }
 
-async function runExtractMediaWithPatterns(pattern: LinkPatternMatch): Promise<ExtractionResponse> {
+async function runExtractMediaWithPatterns(
+  pattern: LinkPatternMatch,
+  depth = 0
+): Promise<ExtractionResponse> {
 
   if (pattern.category === 'DIRECT_MEDIA') {
     return {
@@ -1041,7 +1045,26 @@ async function runExtractMediaWithPatterns(pattern: LinkPatternMatch): Promise<E
       }
     }
 
-    if (iframeMatches.length > 0) {
+    if (iframeMatches.length > 0 && depth < 1) {
+      for (const iframeUrl of iframeMatches) {
+        const embedded = classifyEmbeddedPlayerUrl(iframeUrl);
+        if (
+          embedded.canonicalUrl &&
+          (embedded.provider === 'vimeo' ||
+            embedded.provider === 'dailymotion' ||
+            embedded.provider === 'streamable')
+        ) {
+          const embPattern = classifyUrlByPattern(embedded.canonicalUrl);
+          if (embPattern) {
+            const embExtracted = await runExtractMediaWithPatterns(embPattern, depth + 1);
+            if (embExtracted.ok) {
+              for (const item of embExtracted.items) {
+                if (!found.has(item.url)) found.set(item.url, item);
+              }
+            }
+          }
+        }
+      }
       const iframeResults = await Promise.allSettled(
         iframeMatches.map((iframeUrl) =>
           fetchTextWithTimeout(

@@ -71,6 +71,11 @@ import {
   supportsNativeBrowser,
 } from '../core/nativeBridge';
 import { capMediaCandidates, pruneTabPagesCache } from '../core/memoryCachePolicy';
+import {
+  DEFAULT_SPEED_DIAL_PINS,
+  addSpeedDialPin,
+  removeSpeedDialPin,
+} from '../core/speedDial';
 import { getTranslator, resolveActiveLocale, type TranslationMap } from '../i18n/translations';
 import type {
   AddressSuggestion,
@@ -185,12 +190,15 @@ interface AppContextValue {
   tabPages: Record<string, TabPageRenderState>;
   tabMedia: Record<string, MediaCandidate[]>;
   tabVisibleMedia: Record<string, string | null>;
+  tabBlockedCounts: Record<string, number>;
   isTabSwitcherVisible: boolean;
   openTabSwitcher: () => void;
   closeTabSwitcher: () => void;
   createTab: (options?: { isPrivate?: boolean; url?: string }) => void;
   switchTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
+  clearPrivateTabs: () => void;
+  clearNormalTabs: () => void;
 
   navigateCurrentTab: (input: string) => void;
   openPastedLink: (url: string) => void;
@@ -217,6 +225,11 @@ interface AppContextValue {
 
   isAdBlockOffForCurrentSite: () => boolean;
   toggleAdBlockForCurrentSite: () => void;
+  toggleOmniboxPosition: () => void;
+
+  addSpeedDialPinAction: (input: { title?: string; url: string }) => { ok: boolean; error?: string };
+  removeSpeedDialPinAction: (pinId: string) => void;
+  pinCurrentTabToSpeedDial: () => void;
 
   bookmarks: BookmarkItem[];
   isCurrentTabBookmarked: boolean;
@@ -233,6 +246,7 @@ interface AppContextValue {
   deleteHistoryEntry: (id: string) => void;
   clearHistory: () => void;
   clearCookiesAndStorage: () => void;
+  clearSiteDataForHost: (host: string) => void;
   clearAllBrowsingData: () => void;
 
   getAddressSuggestions: (query: string) => AddressSuggestion[];
@@ -243,6 +257,8 @@ interface AppContextValue {
   isMediaTrayVisible: boolean;
   openMediaTray: () => void;
   closeMediaTray: () => void;
+  isScanningMedia: boolean;
+  rescanCurrentTabMedia: (iframeEl?: HTMLIFrameElement | null) => Promise<void>;
   qualitySheet: QualitySheetState | null;
   openQualitySheetForCandidate: (candidate: MediaCandidate) => void;
   closeQualitySheet: () => void;
@@ -313,10 +329,17 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue | null>(null);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [settings, setSettings] = useState<AppSettings>(() => ({
-    ...DEFAULT_SETTINGS,
-    ...loadJson<Partial<AppSettings>>(STORAGE_KEYS.settings, {}),
-  }));
+  const [settings, setSettings] = useState<AppSettings>(() => {
+    const saved = loadJson<Partial<AppSettings>>(STORAGE_KEYS.settings, {});
+    return {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      omniboxPosition: saved.omniboxPosition === 'bottom' ? 'bottom' : 'top',
+      speedDialPins: Array.isArray(saved.speedDialPins)
+        ? saved.speedDialPins
+        : DEFAULT_SPEED_DIAL_PINS,
+    };
+  });
 
   const locale = resolveActiveLocale(settings.language);
   const isRtl = locale === 'fa';
@@ -594,6 +617,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   tabPagesRef.current = tabPages;
   const [tabMedia, setTabMedia] = useState<Record<string, MediaCandidate[]>>({});
   const [tabVisibleMedia, setTabVisibleMedia] = useState<Record<string, string | null>>({});
+  const [tabBlockedCounts, setTabBlockedCounts] = useState<Record<string, number>>({});
+  const [isScanningMedia, setIsScanningMedia] = useState(false);
   const [isTabSwitcherVisible, setIsTabSwitcherVisible] = useState(false);
   const [isMediaTrayVisible, setIsMediaTrayVisible] = useState(false);
   const [qualitySheet, setQualitySheet] = useState<QualitySheetState | null>(null);
@@ -793,6 +818,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Update tab metadata and reset media candidates for this new page
       setTabMedia((prev) => ({ ...prev, [tabId]: [] }));
       setTabVisibleMedia((prev) => ({ ...prev, [tabId]: null }));
+      setTabBlockedCounts((prev) => ({ ...prev, [tabId]: 0 }));
       setTabs((prev) =>
         prev.map((tab) => {
           if (tab.id !== tabId) return tab;
@@ -935,6 +961,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setSettings((prev) => ({
             ...prev,
             adBlockBlockedRequests: prev.adBlockBlockedRequests + (data.blockedCount || 0),
+          }));
+          setTabBlockedCounts((prev) => ({
+            ...prev,
+            [tabId]: (prev[tabId] || 0) + (data.blockedCount || 0),
           }));
           logEvent('adblock', host, `blocked:${data.blockedCount}`);
         }
@@ -1294,32 +1324,112 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         delete copy[tabId];
         return copy;
       });
-      setTabs((prev) => {
-        const remaining = prev.filter((item) => item.id !== tabId);
-        if (remaining.length === 0) {
-          const fresh: Tab = {
-            id: makeId('tab'),
-            title: t('new_tab'),
-            url: '',
-            isPrivate: false,
-            isDesktopMode: settings.isDesktopSite,
-            createdAt: Date.now(),
-            lastVisited: Date.now(),
-            position: 0,
-            historyStack: [],
-            historyIndex: -1,
-          };
-          setCurrentTabId(fresh.id);
-          return [fresh];
-        }
-        if (tabId === currentTabId) {
-          setCurrentTabId(remaining[remaining.length - 1].id);
-        }
-        return remaining;
+      setTabBlockedCounts((prev) => {
+        if (!(tabId in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[tabId];
+        return copy;
       });
+      const currentList = tabs;
+      const remaining = currentList.filter((item) => item.id !== tabId);
+      if (remaining.length === 0) {
+        const fresh: Tab = {
+          id: makeId('tab'),
+          title: t('new_tab'),
+          url: '',
+          isPrivate: false,
+          isDesktopMode: settings.isDesktopSite,
+          createdAt: Date.now(),
+          lastVisited: Date.now(),
+          position: 0,
+          historyStack: [],
+          historyIndex: -1,
+        };
+        setTabs([fresh]);
+        setCurrentTabId(fresh.id);
+        return;
+      }
+      setTabs(remaining);
+      if (tabId === currentTabId) {
+        const nextTab = remaining[remaining.length - 1];
+        setCurrentTabId(nextTab.id);
+        if (nextTab.url) {
+          const nextPage = tabPagesRef.current[nextTab.id];
+          const hasRenderablePage = Boolean(
+            nextPage && (nextPage.html || nextPage.isLoading || nextPage.error || nextPage.isDemoShowcase)
+          );
+          if (isNativeBrowserEngine || hibernatedTabIds.has(nextTab.id) || !hasRenderablePage) {
+            loadUrlIntoTab(nextTab.id, nextTab.url, false);
+          }
+        }
+      }
     },
-    [currentTabId, settings.isDesktopSite, t]
+    [tabs, currentTabId, settings.isDesktopSite, t, isNativeBrowserEngine, hibernatedTabIds, loadUrlIntoTab]
   );
+
+  const clearPrivateTabs = useCallback(() => {
+    const privateTabs = tabs.filter((item) => item.isPrivate);
+    if (privateTabs.length === 0) return;
+    for (const pt of privateTabs) {
+      tabAbortRef.current.get(pt.id)?.abort();
+      tabAbortRef.current.delete(pt.id);
+      getSalviaNative()?.nativeCloseTab?.(pt.id);
+    }
+    const remaining = tabs.filter((item) => !item.isPrivate);
+    if (remaining.length === 0) {
+      const fresh: Tab = {
+        id: makeId('tab'),
+        title: t('new_tab'),
+        url: '',
+        isPrivate: false,
+        isDesktopMode: settings.isDesktopSite,
+        createdAt: Date.now(),
+        lastVisited: Date.now(),
+        position: 0,
+        historyStack: [],
+        historyIndex: -1,
+      };
+      setTabs([fresh]);
+      setCurrentTabId(fresh.id);
+    } else {
+      setTabs(remaining);
+      if (privateTabs.some((p) => p.id === currentTabId)) {
+        setCurrentTabId(remaining[remaining.length - 1].id);
+      }
+    }
+  }, [tabs, currentTabId, settings.isDesktopSite, t]);
+
+  const clearNormalTabs = useCallback(() => {
+    const normalTabs = tabs.filter((item) => !item.isPrivate);
+    if (normalTabs.length === 0) return;
+    for (const nt of normalTabs) {
+      tabAbortRef.current.get(nt.id)?.abort();
+      tabAbortRef.current.delete(nt.id);
+      getSalviaNative()?.nativeCloseTab?.(nt.id);
+    }
+    const remaining = tabs.filter((item) => item.isPrivate);
+    if (remaining.length === 0) {
+      const fresh: Tab = {
+        id: makeId('tab'),
+        title: t('new_tab'),
+        url: '',
+        isPrivate: false,
+        isDesktopMode: settings.isDesktopSite,
+        createdAt: Date.now(),
+        lastVisited: Date.now(),
+        position: 0,
+        historyStack: [],
+        historyIndex: -1,
+      };
+      setTabs([fresh]);
+      setCurrentTabId(fresh.id);
+    } else {
+      setTabs(remaining);
+      if (normalTabs.some((n) => n.id === currentTabId)) {
+        setCurrentTabId(remaining[remaining.length - 1].id);
+      }
+    }
+  }, [tabs, currentTabId, settings.isDesktopSite, t]);
 
   // Download Queue & Scheduling
   const startingIdsRef = useRef<Set<string>>(new Set());
@@ -1368,6 +1478,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             );
           },
           onComplete: (blobUrl, finalSize, mimeType, nativeUri) => {
+            const resolvedFilename =
+              mimeType === 'video/mp2t'
+                ? record.filename.replace(/\.(mp4|m4v|m4a|webm)$/i, '.ts')
+                : record.filename;
             setDownloads((prev) =>
               prev.map((d) =>
                 d.id === record.id
@@ -1394,9 +1508,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               )
             );
             if (settings.isExportToGallery && !isNativeAndroid()) {
-              triggerBrowserFileSave(blobUrl, record.filename);
+              triggerBrowserFileSave(blobUrl, resolvedFilename);
             }
-            showToast(t('download_finished_named', { name: record.mediaTitle || record.filename }));
+            showToast(t('download_finished_named', { name: record.mediaTitle || resolvedFilename }));
             logEvent('transfer', hostOfUrl(record.url) || 'media', 'completed');
           },
           onPaused: (downloadedBytes) => {
@@ -1847,6 +1961,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [rankedTabCandidates.length, currentMainCandidate, currentTabCandidates.length, openQualitySheetForCandidate, showToast, t]);
 
+  const rescanCurrentTabMedia = useCallback(
+    async (iframeEl?: HTMLIFrameElement | null) => {
+      const targetTab = currentTab;
+      if (!targetTab?.url) {
+        showToast(t('no_media_detected'));
+        return;
+      }
+      setIsScanningMedia(true);
+      try {
+        try {
+          iframeEl?.contentWindow?.postMessage(
+            { target: 'salvia-iframe', type: 'deep-scan' },
+            '*'
+          );
+        } catch {
+          // ignore cross-frame errors
+        }
+        getSalviaNative()?.nativeDeepScan?.();
+
+        const cachedPage = tabPagesRef.current[targetTab.id];
+        if (cachedPage?.html && !isYouTubeExcludedUrl(cachedPage.url)) {
+          const domScanned = scanHtmlForMedia(cachedPage.html, cachedPage.url, cachedPage.title);
+          if (domScanned.length > 0) {
+            mergeTabCandidates(targetTab.id, domScanned);
+          }
+        }
+
+        if (
+          /^https?:\/\//i.test(targetTab.url) &&
+          !BUILTIN_SHOWCASE_PAGES.some((p) => p.url === targetTab.url) &&
+          !isYouTubeExcludedUrl(targetTab.url)
+        ) {
+          const extracted = await extractMediaFromPageUrl(targetTab.url);
+          if (extracted.ok && extracted.candidates.length > 0) {
+            mergeTabCandidates(targetTab.id, extracted.candidates);
+          }
+        }
+      } finally {
+        setIsScanningMedia(false);
+      }
+    },
+    [currentTab, mergeTabCandidates, showToast, t]
+  );
+
   // Playback capture for blob/MSE streams: real MediaRecorder output, never a
   // simulated byte counter. Unsupported runtimes get an honest refusal.
   const [recording, setRecording] = useState<RecordingState>({ isRecording: false, bytes: 0 });
@@ -2023,10 +2181,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     (tabId: string) => {
       const target = tabs.find((item) => item.id === tabId);
       if (!target) return;
+      for (const tab of tabs) {
+        if (tab.id !== tabId) {
+          tabAbortRef.current.get(tab.id)?.abort();
+          tabAbortRef.current.delete(tab.id);
+          getSalviaNative()?.nativeCloseTab?.(tab.id);
+        }
+      }
+      setTabPages((prev) => (prev[tabId] ? { [tabId]: prev[tabId] } : {}));
+      setTabMedia((prev) => (prev[tabId] ? { [tabId]: prev[tabId] } : {}));
+      setTabVisibleMedia((prev) => (prev[tabId] ? { [tabId]: prev[tabId] } : {}));
       setTabs([target]);
       setCurrentTabId(target.id);
+      if (target.url) {
+        const nextPage = tabPagesRef.current[target.id];
+        const hasRenderablePage = Boolean(
+          nextPage && (nextPage.html || nextPage.isLoading || nextPage.error || nextPage.isDemoShowcase)
+        );
+        if (isNativeBrowserEngine || hibernatedTabIds.has(target.id) || !hasRenderablePage) {
+          loadUrlIntoTab(target.id, target.url, false);
+        }
+      }
     },
-    [tabs]
+    [tabs, isNativeBrowserEngine, hibernatedTabIds, loadUrlIntoTab]
   );
 
   const deleteHistoryEntry = useCallback((id: string) => {
@@ -2048,6 +2225,63 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setHistory([]);
     showToast(t('settings_browsing_data_cleared'));
   }, [showToast, t]);
+
+  const clearSiteDataForHost = useCallback(
+    (host: string) => {
+      if (!host) return;
+      getSalviaNative()?.nativeClearBrowserData?.();
+      setHistory((prev) => prev.filter((item) => hostOfUrl(item.url) !== host));
+      setTabBlockedCounts((prev) => ({ ...prev, [currentTabId]: 0 }));
+      showToast(t('settings_cookies_cleared'));
+    },
+    [currentTabId, showToast, t]
+  );
+
+  const toggleOmniboxPosition = useCallback(() => {
+    setSettings((prev) => ({
+      ...prev,
+      omniboxPosition: prev.omniboxPosition === 'bottom' ? 'top' : 'bottom',
+    }));
+  }, []);
+
+  const addSpeedDialPinAction = useCallback(
+    (input: { title?: string; url: string }): { ok: boolean; error?: string } => {
+      let result: { ok: boolean; pins: typeof settings.speedDialPins; error?: string } = {
+        ok: false,
+        pins: settings.speedDialPins,
+      };
+      setSettings((prev) => {
+        result = addSpeedDialPin(prev.speedDialPins || DEFAULT_SPEED_DIAL_PINS, input);
+        if (!result.ok) return prev;
+        return { ...prev, speedDialPins: result.pins };
+      });
+      if (result.ok) {
+        showToast(t('speed_dial_pinned'));
+      } else if (result.error === 'DUPLICATE_PIN') {
+        showToast(t('speed_dial_duplicate'));
+      } else if (result.error === 'INVALID_URL') {
+        showToast(t('speed_dial_invalid_url'));
+      }
+      return { ok: result.ok, error: result.error };
+    },
+    [settings.speedDialPins, showToast, t]
+  );
+
+  const removeSpeedDialPinAction = useCallback(
+    (pinId: string) => {
+      setSettings((prev) => ({
+        ...prev,
+        speedDialPins: removeSpeedDialPin(prev.speedDialPins || DEFAULT_SPEED_DIAL_PINS, pinId),
+      }));
+      showToast(t('speed_dial_unpinned'));
+    },
+    [showToast, t]
+  );
+
+  const pinCurrentTabToSpeedDial = useCallback(() => {
+    if (!currentTab?.url) return;
+    addSpeedDialPinAction({ title: currentTab.title || '', url: currentTab.url });
+  }, [currentTab?.url, currentTab?.title, addSpeedDialPinAction]);
 
   const openUrlFromLibrary = useCallback(
     (url: string) => {
@@ -2230,12 +2464,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       tabPages,
       tabMedia,
       tabVisibleMedia,
+      tabBlockedCounts,
       isTabSwitcherVisible,
       openTabSwitcher,
       closeTabSwitcher,
       createTab,
       switchTab,
       closeTab,
+      clearPrivateTabs,
+      clearNormalTabs,
       navigateCurrentTab,
       openPastedLink,
       isExtractingLink,
@@ -2250,6 +2487,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dismissCleartextBlock,
       isAdBlockOffForCurrentSite,
       toggleAdBlockForCurrentSite,
+      toggleOmniboxPosition,
+      addSpeedDialPinAction,
+      removeSpeedDialPinAction,
+      pinCurrentTabToSpeedDial,
       bookmarks,
       isCurrentTabBookmarked,
       addBookmarkForCurrentTab,
@@ -2264,6 +2505,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deleteHistoryEntry,
       clearHistory,
       clearCookiesAndStorage,
+      clearSiteDataForHost,
       clearAllBrowsingData,
       getAddressSuggestions,
       currentTabCandidates,
@@ -2272,6 +2514,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isMediaTrayVisible,
       openMediaTray,
       closeMediaTray,
+      isScanningMedia,
+      rescanCurrentTabMedia,
       qualitySheet,
       openQualitySheetForCandidate,
       closeQualitySheet,
@@ -2346,12 +2590,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       tabPages,
       tabMedia,
       tabVisibleMedia,
+      tabBlockedCounts,
       isTabSwitcherVisible,
       openTabSwitcher,
       closeTabSwitcher,
       createTab,
       switchTab,
       closeTab,
+      clearPrivateTabs,
+      clearNormalTabs,
       navigateCurrentTab,
       openPastedLink,
       isExtractingLink,
@@ -2366,6 +2613,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dismissCleartextBlock,
       isAdBlockOffForCurrentSite,
       toggleAdBlockForCurrentSite,
+      toggleOmniboxPosition,
+      addSpeedDialPinAction,
+      removeSpeedDialPinAction,
+      pinCurrentTabToSpeedDial,
       bookmarks,
       isCurrentTabBookmarked,
       addBookmarkForCurrentTab,
@@ -2379,6 +2630,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deleteHistoryEntry,
       clearHistory,
       clearCookiesAndStorage,
+      clearSiteDataForHost,
       clearAllBrowsingData,
       getAddressSuggestions,
       currentTabCandidates,
@@ -2387,6 +2639,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isMediaTrayVisible,
       openMediaTray,
       closeMediaTray,
+      isScanningMedia,
+      rescanCurrentTabMedia,
       qualitySheet,
       openQualitySheetForCandidate,
       closeQualitySheet,
@@ -2472,6 +2726,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const targetTabId = ev.tabId || currentTabIdRef.current;
       if (ev.type === 'page-started') {
         const host = hostOfUrl(ev.url) || ev.url;
+        setTabBlockedCounts((prev) => ({ ...prev, [targetTabId]: 0 }));
         setTabPages((prev) => ({
           ...prev,
           [targetTabId]: {
@@ -2559,6 +2814,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSettings((prev) => ({
           ...prev,
           adBlockBlockedRequests: prev.adBlockBlockedRequests + 1,
+        }));
+        setTabBlockedCounts((prev) => ({
+          ...prev,
+          [targetTabId]: (prev[targetTabId] || 0) + 1,
         }));
       } else if (ev.type === 'media-sniffed') {
         if (!ev.mediaUrl || isYouTubeExcludedUrl(ev.mediaUrl) || isYouTubeExcludedUrl(ev.pageUrl)) {

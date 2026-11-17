@@ -1,5 +1,16 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { AudioLines, Check, Download, Film, ListVideo, SlidersHorizontal, Sparkles, ShieldAlert, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  AudioLines,
+  Check,
+  Download,
+  Film,
+  ListVideo,
+  RefreshCw,
+  ShieldAlert,
+  SlidersHorizontal,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import { hostOfUrl } from '../core/adBlockRules';
 import { unsupportedReasonFor, type UnsupportedMedia } from '../core/mediaOfferability';
 import { formatDurationSeconds, formatFileSize } from '../core/mediaResolver';
@@ -14,11 +25,14 @@ export const MediaTraySheet: React.FC = () => {
     currentMainCandidate,
     openQualitySheetForCandidate,
     startBatchDownloadFromCandidates,
+    isScanningMedia,
+    rescanCurrentTabMedia,
     t,
   } = useApp();
 
   const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set());
   const [isConfirming, setIsConfirming] = useState(false);
+  const wasOpenRef = useRef(false);
 
   const offerableRanked = useMemo(
     () =>
@@ -40,9 +54,12 @@ export const MediaTraySheet: React.FC = () => {
   // Pre-check only the smart Main Video when the sheet opens (leaving 5s ads & suggested unchecked)
   useEffect(() => {
     if (!isMediaTrayVisible) {
+      wasOpenRef.current = false;
       setIsConfirming(false);
       return;
     }
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
     if (currentMainCandidate) {
       setSelectedUrls(new Set([currentMainCandidate.mediaUrl]));
     } else if (offerableRanked.length > 0 && offerableRanked[0].role !== 'AD') {
@@ -135,6 +152,7 @@ export const MediaTraySheet: React.FC = () => {
         role="dialog"
         aria-modal="true"
         aria-label={t('media_tray_title')}
+        data-testid="media-tray-sheet"
         onClick={(e) => e.stopPropagation()}
         className="animate-salvia-sheet-in flex max-h-[86vh] w-full max-w-xl flex-col overflow-hidden rounded-t-3xl border border-[var(--salvia-border)] bg-[var(--salvia-surface)] sm:rounded-3xl shadow-2xl"
       >
@@ -145,16 +163,26 @@ export const MediaTraySheet: React.FC = () => {
             <h2 className="font-display text-[17px] font-bold text-[var(--salvia-text)]">
               {t('media_tray_title')}
             </h2>
-            <p className="font-data mt-0.5 text-[12px] text-[var(--salvia-text-muted)]">
+            <p className="font-data tabular-nums mt-0.5 text-[12px] text-[var(--salvia-text-muted)]">
               {t('media_tray_count', { count: rankedTabCandidates.length })}
             </p>
           </div>
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              data-testid="media-deep-scan-btn"
+              disabled={isScanningMedia}
+              onClick={() => void rescanCurrentTabMedia()}
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-[var(--salvia-border)] bg-[var(--salvia-elevated)] px-3 text-[12px] font-semibold text-[var(--salvia-iris-light)] hover:border-[var(--salvia-iris)] disabled:opacity-60"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isScanningMedia ? 'animate-spin' : ''}`} />
+              <span>{isScanningMedia ? t('media_deep_scanning') : t('media_deep_scan')}</span>
+            </button>
             {nonAdUrls.length > 1 ? (
               <button
                 type="button"
                 onClick={toggleSelectAll}
-                className="min-h-10 rounded-xl border border-[var(--salvia-border)] bg-[var(--salvia-elevated)] px-3 text-[12px] font-semibold text-[var(--salvia-cyan-text)] hover:border-[var(--salvia-cyan)]/60"
+                className="min-h-11 rounded-xl border border-[var(--salvia-border)] bg-[var(--salvia-elevated)] px-3 text-[12px] font-semibold text-[var(--salvia-cyan-text)] hover:border-[var(--salvia-cyan)]/60"
               >
                 {t('media_select_all')}
               </button>
@@ -193,24 +221,25 @@ export const MediaTraySheet: React.FC = () => {
               const metaParts = [
                 mediaKindLabel(candidate),
                 candidate.extension ? candidate.extension.toUpperCase() : null,
+                candidate.width && candidate.height ? `${candidate.height}p` : null,
                 candidate.duration ? formatDurationSeconds(candidate.duration / 1000) : null,
                 candidate.estimatedSize ? formatFileSize(candidate.estimatedSize) : null,
                 host || null,
               ].filter(Boolean);
 
-              const roleBadge =
+              const roleLabel =
                 role === 'MAIN' ? (
-                  <span className="inline-flex items-center gap-1 rounded-lg bg-[var(--salvia-cyan-soft)] px-2 py-0.5 text-[11px] font-bold text-[var(--salvia-cyan-text)] ring-1 ring-[var(--salvia-cyan)]/40">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[var(--salvia-cyan-text)]">
                     <Sparkles className="h-3 w-3 text-[var(--salvia-cyan)]" />
                     {t('media_role_main')}
                   </span>
                 ) : role === 'AD' ? (
-                  <span className="inline-flex items-center gap-1 rounded-lg bg-[var(--salvia-pink-soft)] px-2 py-0.5 text-[11px] font-semibold text-[var(--salvia-pink-text)] ring-1 ring-[var(--salvia-pink)]/30">
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--salvia-pink-text)]">
                     <ShieldAlert className="h-3 w-3" />
                     {t('media_role_ad')}
                   </span>
                 ) : (
-                  <span className="inline-flex items-center rounded-lg bg-[var(--salvia-elevated)] px-2 py-0.5 text-[11px] font-medium text-[var(--salvia-text-muted)]">
+                  <span className="text-[11px] font-medium text-[var(--salvia-text-subtle)]">
                     {t('media_role_suggested')}
                   </span>
                 );
@@ -257,11 +286,11 @@ export const MediaTraySheet: React.FC = () => {
                     </div>
 
                     <div className="min-w-0 flex-1">
-                      <div className="mb-1 flex flex-wrap items-center gap-1.5">{roleBadge}</div>
+                      <div className="mb-0.5 flex flex-wrap items-center gap-1.5">{roleLabel}</div>
                       <p className="truncate text-[14px] font-semibold text-[var(--salvia-text)]">
                         {displayTitle}
                       </p>
-                      <p className="font-data mt-0.5 truncate text-[12px] text-[var(--salvia-text-muted)]">
+                      <p className="font-data tabular-nums mt-0.5 truncate text-[12px] text-[var(--salvia-text-muted)]">
                         {metaParts.join(' · ')}
                       </p>
                       {note ? (
@@ -275,7 +304,7 @@ export const MediaTraySheet: React.FC = () => {
                     onClick={() => openQualitySheetForCandidate(candidate)}
                     title={t('media_open_quality')}
                     aria-label={`${t('media_open_quality')}: ${displayTitle}`}
-                    className="flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl border border-[var(--salvia-border)] bg-[var(--salvia-elevated)] px-3 text-[12px] font-semibold text-[var(--salvia-iris-light)] transition-colors hover:border-[var(--salvia-iris)] hover:text-[var(--salvia-text)]"
+                    className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-[var(--salvia-border)] bg-[var(--salvia-elevated)] px-3 text-[12px] font-semibold text-[var(--salvia-iris-light)] transition-colors hover:border-[var(--salvia-iris)] hover:text-[var(--salvia-text)]"
                   >
                     <SlidersHorizontal className="h-3.5 w-3.5" />
                     <span className="hidden sm:inline">{t('media_open_quality')}</span>

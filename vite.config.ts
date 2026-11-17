@@ -109,10 +109,14 @@ function injectBrowserBridge(
     var durMs = el && Number.isFinite(el.duration) && el.duration > 0 ? Math.round(el.duration * 1000) : null;
     var w = Math.round(rect.width || 0);
     var h = Math.round(rect.height || 0);
+    var natW = el && el.videoWidth ? Math.round(el.videoWidth) : 0;
+    var natH = el && el.videoHeight ? Math.round(el.videoHeight) : 0;
     return {
       durationMs: durMs,
-      width: w,
-      height: h,
+      width: natW || w,
+      height: natH || h,
+      domWidth: w,
+      domHeight: h,
       muted: Boolean(el && el.muted),
       hasControls: Boolean(el && el.controls),
       isAd: isAdUrl || isAdDom || (durMs !== null && durMs > 0 && durMs <= 15000 && Boolean(el && el.muted) && !Boolean(el && el.controls)),
@@ -163,12 +167,16 @@ function injectBrowserBridge(
       var src = el.currentSrc || el.src || el.getAttribute('src') || el.getAttribute('data-src') || el.getAttribute('data-lazy-src') || el.getAttribute('data-video-src') || el.getAttribute('data-mp4') || el.getAttribute('data-hls') || el.getAttribute('data-dash');
       if (src) {
         var meta = classifyEl(el, src);
-        pushCandidate(items, src, el.tagName.toLowerCase(), el.getAttribute('type') || (el.tagName === 'AUDIO' ? 'audio/mpeg' : 'video/mp4'), meta.width >= 200 && meta.height >= 110, meta);
+        pushCandidate(items, src, el.tagName.toLowerCase(), el.getAttribute('type') || (el.tagName === 'AUDIO' ? 'audio/mpeg' : 'video/mp4'), (meta.domWidth || meta.width) >= 200 && (meta.domHeight || meta.height) >= 110, meta);
       }
       el.querySelectorAll('source').forEach(function(s) {
         var ssrc = s.getAttribute('src') || s.getAttribute('data-src') || s.getAttribute('data-lazy-src');
         if (ssrc) pushCandidate(items, ssrc, el.tagName.toLowerCase(), s.getAttribute('type') || '', false, classifyEl(el, ssrc));
       });
+    });
+    document.querySelectorAll('iframe[src], iframe[data-src]').forEach(function(ifr) {
+      var isrc = ifr.getAttribute('src') || ifr.getAttribute('data-src');
+      if (isrc && isMediaUrl(isrc)) pushCandidate(items, isrc, 'video', '', false, null);
     });
     document.querySelectorAll('link[rel="preload"][as="video"], link[rel="preload"][as="audio"]').forEach(function(lnk) {
       var href = lnk.getAttribute('href');
@@ -240,13 +248,39 @@ function injectBrowserBridge(
   }
   if (window.XMLHttpRequest) {
     var origOpen = XMLHttpRequest.prototype.open;
+    var origSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.open = function(method, url) {
       try {
-        if (typeof url === 'string' && isMediaUrl(url)) {
-          emitItems([{ url: new URL(url, PAGE_URL).href, tag: 'video', type: '', visible: false }]);
+        this.__salviaXhrUrl = typeof url === 'string' ? url : '';
+        if (this.__salviaXhrUrl && isMediaUrl(this.__salviaXhrUrl)) {
+          emitItems([{ url: new URL(this.__salviaXhrUrl, PAGE_URL).href, tag: 'video', type: '', visible: false }]);
         }
       } catch (e) {}
       return origOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function() {
+      try {
+        this.addEventListener('loadend', function() {
+          try {
+            var resUrl = this.responseURL || this.__salviaXhrUrl || '';
+            if (!resUrl || resUrl.startsWith('data:') || resUrl.startsWith('blob:')) return;
+            var ct = ((this.getResponseHeader && this.getResponseHeader('content-type')) || '').toLowerCase();
+            if (ct.indexOf('video/') === 0 || ct.indexOf('audio/') === 0 || ct.indexOf('mpegurl') !== -1 || ct.indexOf('dash+xml') !== -1) {
+              emitItems([{ url: new URL(resUrl, PAGE_URL).href, tag: ct.indexOf('audio/') === 0 ? 'audio' : 'video', type: ct, visible: false }]);
+              return;
+            }
+            if ((this.responseType === '' || this.responseType === 'text') && typeof this.responseText === 'string' && this.responseText.length > 0 && this.responseText.length < 300000) {
+              var head = this.responseText.slice(0, 128).trim();
+              if (head.indexOf('#EXTM3U') === 0 && head.indexOf('#EXT-X-') !== -1) {
+                emitItems([{ url: new URL(resUrl, PAGE_URL).href, tag: 'video', type: 'application/vnd.apple.mpegurl', visible: false }]);
+              } else if (head.indexOf('<MPD') !== -1 || head.indexOf('urn:mpeg:dash:schema:mpd') !== -1) {
+                emitItems([{ url: new URL(resUrl, PAGE_URL).href, tag: 'video', type: 'application/dash+xml', visible: false }]);
+              }
+            }
+          } catch (e) {}
+        });
+      } catch (e) {}
+      return origSend.apply(this, arguments);
     };
   }
   if (window.history) {
@@ -350,12 +384,15 @@ function injectBrowserBridge(
           try { (new Function(extJs))(); } catch (_extErr) {}
         }
       } catch (_e) {}
+    } else if (ev.data.type === 'deep-scan') {
+      SEEN = Object.create(null);
+      scanMedia();
     }
   });
 })();</script>`;
 
-  if (/<head[^>]*>/i.test(cleaned)) {
-    cleaned = cleaned.replace(/<head([^>]*)>/i, `<head$1>${baseTag}${bridgeScript}`);
+  if (/<head\b[^>]*>/i.test(cleaned)) {
+    cleaned = cleaned.replace(/<head\b([^>]*)>/i, `<head$1>${baseTag}${bridgeScript}`);
   } else {
     cleaned = `${baseTag}${bridgeScript}${cleaned}`;
   }
@@ -543,7 +580,9 @@ async function salviaApiMiddleware(req: IncomingMessage, res: ServerResponse, ne
               { headers: reqHeaders, redirect: 'follow' },
               12000
             );
-            if (mRes.ok) {
+            if (!mRes.ok) {
+              await mRes.body?.cancel().catch(() => {});
+            } else {
               const manifestText = await mRes.text();
               const contentType =
                 mRes.headers.get('content-type') ||
@@ -572,6 +611,7 @@ async function salviaApiMiddleware(req: IncomingMessage, res: ServerResponse, ne
             10000
           );
           if (!headRes.ok || !headRes.headers.get('content-length')) {
+            await headRes.body?.cancel().catch(() => {});
             headRes = await fetchWithTimeout(
               target.toString(),
               {
@@ -593,6 +633,7 @@ async function salviaApiMiddleware(req: IncomingMessage, res: ServerResponse, ne
           const acceptRanges =
             headRes.headers.get('accept-ranges') === 'bytes' || headRes.status === 206;
           const finalUrl = headRes.url || target.toString();
+          await headRes.body?.cancel().catch(() => {});
 
           let manifestText: string | null = null;
           if (
@@ -611,6 +652,8 @@ async function salviaApiMiddleware(req: IncomingMessage, res: ServerResponse, ne
             );
             if (mRes.ok) {
               manifestText = await mRes.text();
+            } else {
+              await mRes.body?.cancel().catch(() => {});
             }
           }
 
@@ -704,7 +747,21 @@ async function salviaApiMiddleware(req: IncomingMessage, res: ServerResponse, ne
         while (!clientClosed && !res.destroyed) {
           const { done, value } = await reader.read();
           if (done) break;
-          if (value) res.write(Buffer.from(value));
+          if (value) {
+            const ok = res.write(Buffer.from(value));
+            if (!ok && !clientClosed && !res.destroyed) {
+              await new Promise<void>((resolve) => {
+                const cleanup = () => {
+                  res.off('drain', onDone);
+                  res.off('close', onDone);
+                  resolve();
+                };
+                const onDone = () => cleanup();
+                res.once('drain', onDone);
+                res.once('close', onDone);
+              });
+            }
+          }
         }
       } finally {
         reader.cancel().catch(() => {});

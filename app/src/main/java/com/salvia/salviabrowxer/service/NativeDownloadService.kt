@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.webkit.CookieManager
 import androidx.core.app.NotificationCompat
 import com.salvia.salviabrowxer.MainActivity
 import com.salvia.salviabrowxer.R
@@ -137,9 +138,18 @@ class NativeDownloadService : Service() {
     }
 
     private fun newRequestBuilder(url: String, referer: String?): Request.Builder {
+        val clean = cleanHttpUrl(url)
         val builder = Request.Builder()
-            .url(cleanHttpUrl(url))
+            .url(clean)
             .header("User-Agent", USER_AGENT)
+        val cookie = try {
+            CookieManager.getInstance().getCookie(clean)
+        } catch (_: Exception) {
+            null
+        }
+        if (!cookie.isNullOrBlank()) {
+            builder.header("Cookie", cookie)
+        }
         if (!referer.isNullOrBlank()) {
             builder.header("Referer", referer)
             try {

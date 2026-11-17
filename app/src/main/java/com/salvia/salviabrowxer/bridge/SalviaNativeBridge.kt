@@ -226,6 +226,11 @@ class SalviaNativeBridge(private val activity: Activity) {
     fun nativeSetExtensions(css: String, js: String) {
         (activity as? MainActivity)?.nativeSetExtensions(css, js)
     }
+
+    @JavascriptInterface
+    fun nativeDeepScan() {
+        (activity as? MainActivity)?.nativeDeepScan()
+    }
 }
 
 /**

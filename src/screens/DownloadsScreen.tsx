@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Lock, Trash2, Unlock, X } from 'lucide-react';
 import { BrowserNavRail } from '../components/BrowserNavRail';
 import { DownloadItemRow } from '../components/DownloadItemRow';
@@ -20,6 +20,9 @@ export const DownloadsScreen: React.FC = () => {
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<number>(downloadsInitialTab);
+  useEffect(() => {
+    setActiveTab(downloadsInitialTab);
+  }, [downloadsInitialTab]);
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
 

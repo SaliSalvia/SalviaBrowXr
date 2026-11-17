@@ -1021,6 +1021,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    fun nativeDeepScan() {
+        runOnUiThread {
+            browserWebView?.evaluateJavascript(
+                "window.__salviaDeepScan && window.__salviaDeepScan();",
+                null
+            )
+        }
+    }
+
     fun setFloatingOrbState(
         visible: Boolean,
         highlighted: Boolean,

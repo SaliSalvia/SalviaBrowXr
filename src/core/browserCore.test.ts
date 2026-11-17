@@ -8,7 +8,13 @@ import { capMediaCandidates, pruneTabPagesCache } from './memoryCachePolicy';
 import { selectMainCandidate, rankAndClassifyCandidates } from './mainContentSelector';
 import { snapFloatingPosition } from './floatingSnap';
 import { unsupportedReasonFor } from './mediaOfferability';
-import { LockoutPolicy } from './security';
+import { LockoutPolicy, MIN_PASSWORD_CHARS } from './security';
+import {
+  discardPartialTransfer,
+  pauseTransfer,
+  releaseBlobUrl,
+  startTransfer,
+} from './downloadEngine';
 
 test('classifyPastedLink distinguishes media files from social/web pages and invalid text', () => {
   assert.equal(classifyPastedLink('https://cdn.example.com/videos/clip.mp4'), 'MEDIA_FILE');
@@ -283,4 +289,137 @@ test('pruneTabPagesCache keeps active tab HTML and strips older inactive tabs to
   const capped = capMediaCandidates(many, 60);
   assert.equal(capped.length, 60);
   assert.equal(capped[0].id, 'c-79');
+});
+
+test('startTransfer preserves partial bytes if paused during resume handshake and completes full file on next resume', async () => {
+  const originalFetch = globalThis.fetch;
+  const fullPayload = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+  let phase = 1;
+  let resumeHandshakeStarted!: () => void;
+  const handshakeReady = new Promise<void>((resolve) => {
+    resumeHandshakeStarted = resolve;
+  });
+
+  const dlId = 'test-resume-preserve';
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const signal = init?.signal;
+    if (phase === 1) {
+      let pulls = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          if (pulls === 1) {
+            controller.enqueue(fullPayload.slice(0, 4));
+            return;
+          }
+          setTimeout(() => pauseTransfer(dlId), 5);
+          return new Promise<void>((_res, rej) => {
+            signal?.addEventListener('abort', () => {
+              rej(new DOMException('Aborted', 'AbortError'));
+            });
+          });
+        },
+        cancel() {},
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-length': String(fullPayload.length), 'content-type': 'video/mp4' },
+      });
+    }
+    if (phase === 2) {
+      resumeHandshakeStarted();
+      return await new Promise<Response>((_res, rej) => {
+        const keepAlive = setTimeout(() => {}, 5000);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(keepAlive);
+          rej(new DOMException('Aborted', 'AbortError'));
+        });
+      });
+    }
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get('range'), 'bytes=4-');
+    const tail = fullPayload.slice(4);
+    return new Response(tail, {
+      status: 206,
+      headers: {
+        'content-length': String(tail.length),
+        'content-range': `bytes 4-${fullPayload.length - 1}/${fullPayload.length}`,
+        'content-type': 'video/mp4',
+      },
+    });
+  }) as typeof fetch;
+
+  try {
+    let pausedBytes1 = -1;
+    const p1 = startTransfer(
+      dlId,
+      'https://cdn.example.com/movie.mp4',
+      false,
+      'video/mp4',
+      {
+        onProgress: () => {},
+        onComplete: () => assert.fail('phase 1 should pause, not complete'),
+        onError: (msg) => assert.fail(`phase 1 unexpected error: ${msg}`),
+        onPaused: (bytes) => {
+          pausedBytes1 = bytes ?? -1;
+        },
+        onCancelled: () => assert.fail('phase 1 should pause, not cancel'),
+      }
+    );
+    await p1;
+    assert.equal(pausedBytes1, 4);
+
+    // Phase 2: resume, then pause while headers are still pending
+    phase = 2;
+    let pausedBytes2 = -1;
+    const p2 = startTransfer(
+      dlId,
+      'https://cdn.example.com/movie.mp4',
+      false,
+      'video/mp4',
+      {
+        onProgress: () => {},
+        onComplete: () => assert.fail('phase 2 should pause, not complete'),
+        onError: (msg) => assert.fail(`phase 2 unexpected error: ${msg}`),
+        onPaused: (bytes) => {
+          pausedBytes2 = bytes ?? -1;
+        },
+        onCancelled: () => assert.fail('phase 2 should pause, not cancel'),
+      },
+      { resumeFrom: 4 }
+    );
+    await handshakeReady;
+    pauseTransfer(dlId);
+    await p2;
+    assert.equal(pausedBytes2, 4);
+
+    // Phase 3: resume again and verify 206 Range bytes=4- produces complete 8-byte output
+    phase = 3;
+    let finalSize = -1;
+    await startTransfer(
+      dlId,
+      'https://cdn.example.com/movie.mp4',
+      false,
+      'video/mp4',
+      {
+        onProgress: () => {},
+        onComplete: (_url, size) => {
+          finalSize = size;
+        },
+        onError: (msg) => assert.fail(`phase 3 unexpected error: ${msg}`),
+        onPaused: () => assert.fail('phase 3 should complete'),
+        onCancelled: () => assert.fail('phase 3 should complete'),
+      },
+      { resumeFrom: 4 }
+    );
+    assert.equal(finalSize, fullPayload.length);
+  } finally {
+    globalThis.fetch = originalFetch;
+    discardPartialTransfer(dlId);
+    releaseBlobUrl(dlId);
+  }
+});
+
+test('security MIN_PASSWORD_CHARS matches minimum enforced verifier policy', () => {
+  assert.equal(MIN_PASSWORD_CHARS, 6);
 });

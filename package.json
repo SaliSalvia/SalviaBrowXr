@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/core/browserCore.test.ts src/core/linkPatternEngine.test.ts src/core/extensionsAndPower.test.ts"
+    "test": "tsx --test src/core/browserCore.test.ts src/core/linkPatternEngine.test.ts src/core/extensionsAndPower.test.ts src/core/redesignCore.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
